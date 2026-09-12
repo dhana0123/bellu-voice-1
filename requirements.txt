@@ -1,0 +1,16 @@
+numpy
+pyyaml
+pydantic>=2
+soundfile
+sounddevice
+librosa
+torch
+torchaudio
+transformers>=4.44.0
+accelerate
+huggingface_hub
+sentencepiece
+peft
+gxl_ai_utils
+tensorboardX
+git+https://github.com/huggingface/parler-tts.git

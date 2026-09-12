@@ -1,0 +1,48 @@
+sample_rate: 16000
+event_loop_ms: 80
+asr_interval_ms: 400
+sta_interval_ms: 500
+audio_window_s: 4.0
+ring_buffer_s: 8.0
+
+asr:
+  model_id: bodhan-ai/indic-transcribe-core
+  language: null          # ISO code (hi, ta, te, ...) or null for auto LID
+  device: cuda
+  window_s: 3.0
+  min_speech_ms: 250
+
+sta:
+  repo_id: ASLP-lab/Easy-Turn
+  easy_turn_root: third_party/Easy-Turn/Easy_Turn
+  checkpoint: models/easy-turn/checkpoint.pt
+  train_yaml: models/easy-turn/train.yaml
+  qwen_path: models/Qwen2.5-0.5B-Instruct
+  device: cuda
+  window_s: 4.0
+  task: "<TRANSCRIBE> <BACKCHANNEL> <COMPLETE>"
+  prompt: "Please transcribe the audio, then append exactly one turn tag: <COMPLETE>, <INCOMPLETE>, <BACKCHANNEL>, or <WAIT>."
+
+llm:
+  model_id: sarvamai/sarvam-30b
+  device: auto
+  max_new_tokens: 256
+  temperature: 0.4
+  enable_thinking: false
+  min_decision_interval_ms: 320
+
+tts:
+  model_id: parler-tts/parler-tts-mini-v1
+  device: cuda
+  speaker: Laura
+  play_steps_s: 0.5
+  sample_rate: 44100
+
+playback:
+  output_sample_rate: 16000
+
+gating:
+  backchannel_threshold: 0.75
+  interruption_threshold: 0.55
+  complete_threshold: 0.80
+  wait_threshold: 0.70

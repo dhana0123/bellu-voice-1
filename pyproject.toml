@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bellu-voice"
+version = "0.1.0"
+description = "Continuous full-duplex spoken dialogue: ASR + Easy-Turn STA + Sarvam-30B + ParlerTTS"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "pyyaml",
+  "pydantic>=2",
+  "soundfile",
+  "sounddevice",
+  "librosa",
+  "torch",
+  "torchaudio",
+  "transformers>=4.44.0",
+  "accelerate",
+  "huggingface_hub",
+  "sentencepiece",
+  "peft",
+  "gxl_ai_utils",
+  "tensorboardX",
+]
+
+[project.optional-dependencies]
+tts = ["parler-tts @ git+https://github.com/huggingface/parler-tts.git"]
+dev = ["pytest"]
+
+[project.scripts]
+bellu = "bellu.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["bellu*"]
