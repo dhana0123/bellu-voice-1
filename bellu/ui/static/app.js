@@ -25,6 +25,8 @@ function displayable(text) {
   if (parts.length >= 6 && new Set(parts).size <= 2) return "";
   return trimmed;
 }
+
+function addBubble(role, text) {
   if (!text) return;
   const el = document.createElement("div");
   el.className = `bubble ${role}`;
@@ -147,18 +149,27 @@ async function connect() {
     return;
   }
   setStatus("connecting", "live");
-  await startMicStream();
   const proto = location.protocol === "https:" ? "wss" : "ws";
   socket = new WebSocket(`${proto}://${location.host}/api/chat`);
   socket.binaryType = "arraybuffer";
 
-  socket.onopen = () => {
+  socket.onopen = async () => {
     connected = true;
     connectBtn.classList.add("on");
     connectBtn.textContent = "Live";
     setStatus("live duplex", "ok");
-    socket.send(JSON.stringify({ type: "hello", sr: audioCtx.sampleRate }));
     addBubble("sys", "Connected — Telugu only. Keep talking.");
+    try {
+      await startMicStream();
+      socket.send(JSON.stringify({ type: "hello", sr: (audioCtx && audioCtx.sampleRate) || 48000 }));
+    } catch (err) {
+      console.error(err);
+      setStatus("live · type to chat (mic blocked)", "live");
+      addBubble("sys", "Mic blocked. Allow microphone, or type Telugu in the box.");
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: "hello", sr: 48000 }));
+      }
+    }
   };
 
   socket.onmessage = async (event) => {
