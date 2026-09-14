@@ -12,16 +12,19 @@ _OTHER_INDIC = re.compile(
     r"\u0B80-\u0BFF\u0D00-\u0D7F\u1C50-\u1C7F]"
 )
 _JUNK_KEYS = (
-    "TRIGGER:",
-    "TRIGGER ",
+    "GLOBAL",
+    "CONTEXT",
+    "TRIGGER",
+    "TURNING",
     "ACTIVE STATE",
     "CURRENT SNAPSHOT",
     "ASR transcript",
-    "TURNING POINTS",
     "RECENT TRACE",
-    "system_event",
-    "trigger_snapsot",
-    "trigger_snapshot",
+    "గ్లోబల్",
+    "కాంటెక్స్ట్",
+    "స్పోకెన్",
+    "డైలాగ్",
+    "డైలా",
 )
 
 
@@ -52,6 +55,9 @@ def looks_locked(text: str) -> bool:
         return True
     if any(key in raw for key in _JUNK_KEYS):
         return False
+    folded = raw.upper()
+    if any(key.upper() in folded for key in _JUNK_KEYS if key.isascii()):
+        return False
     te = len(_TE.findall(raw))
     other = len(_OTHER_INDIC.findall(raw))
     if other and te == 0:
@@ -70,6 +76,9 @@ def clean_user_text(text: str) -> str:
 
 def clean_spoken(text: str) -> str:
     text = collapse_repeats((text or "").strip())
+    text = text.split("\n", 1)[0].strip()
+    if "వినేవాడు" in text:
+        text = text.split("వినేవాడు", 1)[0].strip()
     if not looks_locked(text):
         return ""
-    return text[:180]
+    return text[:80]

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections import deque
-from queue import Empty, Queue
 from threading import Event, Thread
 from time import sleep, time
 from typing import Any, Callable
@@ -9,16 +8,14 @@ from typing import Any, Callable
 from bellu.log import clip, clog
 from bellu.memory import TemporalMemory
 from bellu.perception.audio import AudioRing
-from bellu.protocol import SpeechCommand, spoken_text
+from bellu.protocol import SpeechCommand
 from bellu.types import ASRState, Action, GlobalState, TurnState
 
 
 class DuplexRuntime:
-    """Two parallel streams, never stopping each other.
+    """DuplexCascade: mic IN streams always; LLM tokens flush straight into streaming TTS.
 
-    IN  : mic ring → ASR / STA → memory  (always)
-    OUT : speak queue → TTS → speakers   (always)
-    LLM : reads memory, enqueues SAY; never cancels OUT except UI Stop.
+    No speak queue. Token micro-turns go to TTS as they appear.
     """
 
     def __init__(
@@ -53,11 +50,9 @@ class DuplexRuntime:
         self._asr_busy = Event()
         self._sta_busy = Event()
         self._llm_busy = Event()
-        self._speak_q: Queue[SpeechCommand] = Queue(maxsize=8)
         self.ui_log: deque[dict[str, Any]] = deque(maxlen=80)
         self._mic = None
         self._in_thread: Thread | None = None
-        self._out_thread: Thread | None = None
         self._loop_thread: Thread | None = None
         self.mode = "live"
         self.on_tts: Callable | None = None
@@ -70,11 +65,9 @@ class DuplexRuntime:
             self._mic = self.microphone_factory(self.cfg["sample_rate"], self.ring.push)
             self._mic.start()
         self._in_thread = Thread(target=self._in_loop, name="bellu-in", daemon=True)
-        self._out_thread = Thread(target=self._out_loop, name="bellu-out", daemon=True)
         self._loop_thread = self._in_thread
         self._in_thread.start()
-        self._out_thread.start()
-        clog("loop", f"IN+OUT parallel mic={'on' if self._mic else 'browser'}")
+        clog("loop", f"stream IN+TTS token mic={'on' if self._mic else 'browser'}")
         self._note("system", "duplex streams started")
 
     def halt(self) -> None:
@@ -98,11 +91,6 @@ class DuplexRuntime:
         self.ring.push(chunk)
 
     def interrupt(self) -> None:
-        while True:
-            try:
-                self._speak_q.get_nowait()
-            except Empty:
-                break
         self.tts.cancel_playback()
         self.state.assistant.speaking = False
         self.state.assistant.current_action = "interrupted"
@@ -126,6 +114,11 @@ class DuplexRuntime:
         if kind == "error":
             clog("error", text)
 
+    def _audio_sink(self, audio, sr) -> None:
+        self.speaker.play(audio, sr)
+        if self.on_tts is not None:
+            self.on_tts(audio, sr)
+
     def _in_loop(self) -> None:
         tick = self.cfg["event_loop_ms"] / 1000.0
         asr_every = self.cfg["asr_interval_ms"] / 1000.0
@@ -136,42 +129,18 @@ class DuplexRuntime:
             self.state.rms = self.ring.rms
             self.state.sta.user_speaking = self.ring.speaking
             self.state.sta.pause_ms = self.ring.pause_ms()
-            tts_busy = bool(getattr(self.tts, "busy", Event()).is_set())
-            self.state.assistant.speaking = tts_busy
+            self.state.assistant.speaking = bool(getattr(self.tts, "busy", Event()).is_set())
             if not self._asr_busy.is_set() and now - self.last_asr >= asr_every:
                 self._asr_busy.set()
                 Thread(target=self._asr_once, daemon=True).start()
             if not self._sta_busy.is_set() and now - self.last_sta >= sta_every:
                 self._sta_busy.set()
                 Thread(target=self._sta_once, daemon=True).start()
-            if not self._llm_busy.is_set() and not tts_busy:
+            asr = (self.state.asr.text or "").strip()
+            if not self._llm_busy.is_set() and asr and asr != self.last_handled_transcript:
                 self._llm_busy.set()
                 Thread(target=self._llm_once, daemon=True).start()
             sleep(tick)
-
-    def _out_loop(self) -> None:
-        while not self.stop.is_set():
-            try:
-                command = self._speak_q.get(timeout=0.08)
-            except Empty:
-                continue
-            text = spoken_text(command)
-            if not text:
-                continue
-            self.state.assistant.last_text = text
-            self.memory.add("assistant_say", text)
-
-            def sink(audio, sr, _cmd=command):
-                self.speaker.play(audio, sr)
-                if self.on_tts is not None:
-                    self.on_tts(audio, sr)
-
-            clog("out", f"speak {clip(text)}")
-            try:
-                self.tts.speak(command, sink)
-            except Exception as exc:
-                clog("tts", f"FAIL {type(exc).__name__}: {exc}")
-                self._note("error", f"tts: {exc}")
 
     def _asr_once(self) -> None:
         now = time()
@@ -223,42 +192,32 @@ class DuplexRuntime:
             clog("in", f"sta {sta_line}")
         self._sta_busy.clear()
 
-    def _llm_once(self) -> None:
-        now = time()
-        self.last_llm = now
-        self.last_trigger = "in"
+    def _on_llm_tokens(self, piece: str) -> None:
+        piece = (piece or "").strip()
+        if not piece or self.stop.is_set():
+            return
+        cmd = SpeechCommand(action=Action.SAY, text=piece, reason="micro_turn")
+        self.last_command = cmd
+        self.state.assistant.current_action = "say"
+        self.state.assistant.last_text = piece
+        self.memory.add("assistant_say", piece)
+        self._note("protocol", f"SAY {clip(piece)}")
+        clog("out", f"token→tts {clip(piece)}")
         try:
-            command = self.brain.decide(
-                self.state,
-                self.memory.prompt_block(self.state),
-                "in",
-            )
+            self.tts.speak_text(piece, self._audio_sink)
+        except Exception as exc:
+            clog("tts", f"FAIL {type(exc).__name__}: {exc}")
+
+    def _llm_once(self) -> None:
+        asr = (self.state.asr.text or "").strip()
+        self.last_handled_transcript = asr
+        self.last_llm = time()
+        try:
+            self.brain.stream_reply(asr, self._on_llm_tokens)
         except Exception as exc:
             self._note("error", f"llm: {exc}")
-            command = SpeechCommand.wait(reason=f"llm_error:{type(exc).__name__}")
-        self._apply(command)
+            clog("llm", f"FAIL {exc}")
         self._llm_busy.clear()
-
-    def _apply(self, command: SpeechCommand) -> None:
-        if command.action in {Action.STOP, Action.INTERRUPT}:
-            command = SpeechCommand.wait(reason="barge_in_ignored_use_stop")
-        self.last_command = command
-        self.state.assistant.current_action = command.action.value.lower()
-        spoken = spoken_text(command) or command.reason
-        clog("proto", f"{command.action.value} {clip(spoken)}")
-        if command.action != Action.WAIT:
-            self._note("protocol", f"{command.action.value} {spoken}".strip())
-
-        if command.action in {Action.WAIT, Action.CONTINUE}:
-            return
-        text = spoken_text(command)
-        if not text:
-            return
-        try:
-            self._speak_q.put_nowait(command)
-            clog("out", f"queued {clip(text)}")
-        except Exception:
-            clog("out", "queue full — keep playing")
 
     def ingest_text(self, text: str) -> None:
         text = (text or "").strip()
@@ -272,7 +231,6 @@ class DuplexRuntime:
         self.memory.add("user_final", text, now)
         clog("in", f"text {clip(text)}")
         self._note("user_final", text)
-        self.last_handled_transcript = text
         if not self._llm_busy.is_set():
             self._llm_busy.set()
             Thread(target=self._llm_once, daemon=True).start()

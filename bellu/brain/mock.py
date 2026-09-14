@@ -5,6 +5,11 @@ from bellu.types import GlobalState
 
 
 class MockBrain:
+    def stream_reply(self, asr: str, on_chunk) -> None:
+        text = (asr or "").strip()
+        if text:
+            on_chunk(f"అవును, {text}")
+
     def decide(self, state: GlobalState, memory_block: str, trigger: str) -> SpeechCommand:
         if trigger == "backchannel_opportunity":
             return SpeechCommand.from_dict(

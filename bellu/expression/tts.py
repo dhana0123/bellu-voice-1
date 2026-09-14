@@ -8,6 +8,7 @@ import torch
 
 from bellu.log import clip, clog
 from bellu.protocol import SpeechCommand, spoken_text
+from bellu.types import Action
 
 AudioSink = Callable[[np.ndarray, int], None]
 
@@ -58,17 +59,21 @@ class ParlerExpression:
         self.cancel.set()
 
     def speak(self, command: SpeechCommand, sink: AudioSink) -> None:
-        text = spoken_text(command)
-        if command.action.value in {"WAIT", "STOP", "CONTINUE"} or not text:
+        self.speak_text(spoken_text(command), sink)
+
+    def speak_text(self, text: str, sink: AudioSink) -> None:
+        text = (text or "").strip()
+        if not text:
             return
         if self.model is None:
             self.load()
         self.cancel.clear()
         self.busy.set()
-        clog("tts", f"start {clip(text)}")
+        clog("tts", f"stream {clip(text)}")
         try:
-            self._stream(text, description_from_protocol(command, self.cfg.get("speaker", "Lalitha")), sink)
-            clog("tts", "done")
+            cmd = SpeechCommand(action=Action.SAY, text=text)
+            self._stream(text, description_from_protocol(cmd, self.cfg.get("speaker", "Lalitha")), sink)
+            clog("tts", "chunk done")
         except Exception as exc:
             clog("tts", f"FAIL {type(exc).__name__}: {exc}")
             raise
@@ -120,9 +125,12 @@ class MockTTS:
         self.cancel.set()
 
     def speak(self, command: SpeechCommand, sink: AudioSink) -> None:
+        self.speak_text(spoken_text(command), sink)
+
+    def speak_text(self, text: str, sink: AudioSink) -> None:
         from bellu.perception.audio import placeholder_speech
 
-        text = spoken_text(command)
+        text = (text or "").strip()
         self.last_text = text
         if not text:
             return

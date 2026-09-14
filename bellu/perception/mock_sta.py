@@ -36,9 +36,12 @@ class MockTTS:
         self.cancel.set()
 
     def speak(self, command: SpeechCommand, sink) -> None:
+        self.speak_text(spoken_text(command), sink)
+
+    def speak_text(self, text: str, sink) -> None:
         from bellu.perception.audio import placeholder_speech
 
-        text = spoken_text(command)
+        text = (text or "").strip()
         self.last_text = text
         if not text:
             return

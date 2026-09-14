@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from threading import Thread
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
@@ -9,7 +10,7 @@ from bellu.brain.prompts import CONTROLLER_SYSTEM
 from bellu.language import clean_spoken
 from bellu.log import clip, clog
 from bellu.protocol import SpeechCommand
-from bellu.types import GlobalState
+from bellu.types import Action, GlobalState
 
 SYSTEM_CHAT = (
     "You are Bellu. Speak only Telugu (తెలుగు). One or two short spoken sentences. "
@@ -109,7 +110,7 @@ class SarvamBrain:
         device = next(self.model.parameters()).device
         inputs = {k: v.to(device) for k, v in inputs.items()}
         gen_kwargs = dict(
-            max_new_tokens=int(self.cfg.get("max_new_tokens", 96)),
+            max_new_tokens=int(self.cfg.get("max_new_tokens", 48)),
             temperature=temperature,
             top_p=0.9,
             do_sample=True,
@@ -128,30 +129,71 @@ class SarvamBrain:
         clog("llm", clip(text, 220) or "(empty)")
         return text
 
+    def stream_reply(self, asr: str, on_chunk) -> None:
+        """DuplexCascade: stream LLM tokens; flush ~10-token micro-turns into TTS."""
+
+        from transformers import TextIteratorStreamer
+
+        if self.model is None:
+            self.load()
+        asr = (asr or "").strip()
+        if not asr:
+            return
+        prompt = f"{CONTROLLER_SYSTEM}వినేవాడు: {asr}\nస్నేహితుడు:"
+        clog("llm", f"stream asr={clip(asr, 80)!r}")
+        inputs = self.tokenizer(prompt, return_tensors="pt")
+        device = next(self.model.parameters()).device
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True)
+        gen_kwargs = dict(
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs.get("attention_mask"),
+            max_new_tokens=int(self.cfg.get("max_new_tokens", 24)),
+            temperature=float(self.cfg.get("temperature", 0.3)),
+            top_p=0.9,
+            do_sample=True,
+            repetition_penalty=float(self.cfg.get("repetition_penalty", 1.25)),
+            pad_token_id=self.tokenizer.pad_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
+            streamer=streamer,
+        )
+        thread = Thread(target=self.model.generate, kwargs=gen_kwargs, daemon=True)
+        thread.start()
+        buf = ""
+        ntok = 0
+        for tok in streamer:
+            if not tok:
+                continue
+            buf += tok
+            ntok += 1
+            flush = ntok >= 8 or any(ch in tok for ch in "।.?!, \n")
+            if flush:
+                piece = clean_spoken(buf)
+                buf = ""
+                ntok = 0
+                if piece:
+                    clog("llm", f"token→tts {clip(piece)}")
+                    on_chunk(piece)
+        piece = clean_spoken(buf)
+        if piece:
+            clog("llm", f"token→tts {clip(piece)}")
+            on_chunk(piece)
+        thread.join(timeout=1.0)
+
     def decide(self, state: GlobalState, memory_block: str, trigger: str) -> SpeechCommand:
         if self.model is None:
             self.load()
-        user = (
-            "GLOBAL CONTEXT\n"
-            f"{memory_block}\n\n"
-            "Decide one speech-protocol JSON. Do not copy GLOBAL CONTEXT into text."
-        )
-        messages = [
-            {"role": "system", "content": CONTROLLER_SYSTEM},
-            {"role": "user", "content": user},
-        ]
-        prompt = _format_prompt(
-            self.tokenizer,
-            messages,
-            enable_thinking=bool(self.cfg.get("enable_thinking", False)),
-        )
-        clog("llm", f"decide trigger={trigger} asr={clip(state.asr.text, 80)!r} lang=te")
+        asr = (state.asr.text or "").strip()
+        if not asr:
+            return SpeechCommand.wait("no user text")
+        prompt = f"{CONTROLLER_SYSTEM}వినేవాడు: {asr}\nస్నేహితుడు:"
+        clog("llm", f"reply asr={clip(asr, 80)!r}")
         raw = self._generate(prompt, float(self.cfg.get("temperature", 0.3)))
-        cmd = SpeechCommand.from_llm_text(raw)
-        cmd.text = clean_spoken(cmd.text)
-        if cmd.action.value == "SAY" and not cmd.text:
-            cmd = SpeechCommand.wait(reason="dropped_non_telugu")
-        clog("llm", f"parsed {cmd.action.value} reason={clip(cmd.reason, 80)} text={clip(cmd.text, 80)!r}")
+        spoken = clean_spoken(raw)
+        if not spoken or spoken == asr:
+            return SpeechCommand.wait("empty_or_echo")
+        cmd = SpeechCommand(action=Action.SAY, text=spoken, reason="telugu_reply")
+        clog("llm", f"parsed SAY text={clip(cmd.text, 80)!r}")
         return cmd
 
     def chat(self, user_text: str, history: list[dict] | None = None) -> str:

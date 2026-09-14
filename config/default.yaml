@@ -32,7 +32,7 @@ llm:
   model_id: sarvamai/OpenHathi-7B-Hi-v0.1-Base
   language: te
   device: auto
-  max_new_tokens: 96
+  max_new_tokens: 24
   temperature: 0.3
   repetition_penalty: 1.25
   enable_thinking: false
@@ -43,7 +43,7 @@ tts:
   language: te
   device: cuda
   speaker: Lalitha
-  play_steps_s: 0.5
+  play_steps_s: 0.25
   sample_rate: 44100
 
 playback:
