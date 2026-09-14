@@ -119,12 +119,12 @@ class SpeechCommand:
 
 
 BACKCHANNEL_PHRASES = {
-    "MM_HMM": "mm-hmm",
-    "HMM": "hmm",
-    "UHH": "uhh",
-    "OK": "okay",
-    "HAAN": "haan",
-    "ACHA": "acha",
+    "MM_HMM": "హ్మ్",
+    "HMM": "హ్మ్",
+    "UHH": "ఉమ్",
+    "OK": "సరే",
+    "HAAN": "అవును",
+    "ACHA": "సరే",
 }
 
 

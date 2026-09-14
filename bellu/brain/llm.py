@@ -6,13 +6,14 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 
 from bellu.brain.prompts import CONTROLLER_SYSTEM
+from bellu.language import clean_spoken
 from bellu.log import clip, clog
 from bellu.protocol import SpeechCommand
 from bellu.types import GlobalState
 
 SYSTEM_CHAT = (
-    "You are Bellu, a natural conversational assistant for India. "
-    "Reply in the user's language. Be concise and spoken-friendly."
+    "You are Bellu. Speak only Telugu (తెలుగు). One or two short spoken sentences. "
+    "Never Hindi. Never English. Never repeat a word more than twice."
 )
 
 
@@ -107,14 +108,16 @@ class SarvamBrain:
         inputs = self.tokenizer(prompt, return_tensors="pt")
         device = next(self.model.parameters()).device
         inputs = {k: v.to(device) for k, v in inputs.items()}
-        gen = GenerationConfig(
-            max_new_tokens=int(self.cfg.get("max_new_tokens", 256)),
+        gen_kwargs = dict(
+            max_new_tokens=int(self.cfg.get("max_new_tokens", 96)),
             temperature=temperature,
             top_p=0.9,
             do_sample=True,
+            repetition_penalty=float(self.cfg.get("repetition_penalty", 1.25)),
             pad_token_id=self.tokenizer.pad_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
         )
+        gen = GenerationConfig(**gen_kwargs)
         with torch.no_grad():
             out = self.model.generate(
                 input_ids=inputs["input_ids"],
@@ -147,10 +150,13 @@ class SarvamBrain:
             messages,
             enable_thinking=bool(self.cfg.get("enable_thinking", False)),
         )
-        clog("llm", f"decide trigger={trigger} asr={clip(state.asr.text, 80)!r}")
-        raw = self._generate(prompt, float(self.cfg.get("temperature", 0.4)))
+        clog("llm", f"decide trigger={trigger} asr={clip(state.asr.text, 80)!r} lang=te")
+        raw = self._generate(prompt, float(self.cfg.get("temperature", 0.3)))
         cmd = SpeechCommand.from_llm_text(raw)
-        clog("llm", f"parsed {cmd.action.value} reason={clip(cmd.reason, 80)}")
+        cmd.text = clean_spoken(cmd.text)
+        if cmd.action.value == "SAY" and not cmd.text:
+            cmd = SpeechCommand.wait(reason="dropped_non_telugu")
+        clog("llm", f"parsed {cmd.action.value} reason={clip(cmd.reason, 80)} text={clip(cmd.text, 80)!r}")
         return cmd
 
     def chat(self, user_text: str, history: list[dict] | None = None) -> str:

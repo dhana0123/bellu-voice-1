@@ -8,6 +8,8 @@ from typing import Optional
 
 import numpy as np
 
+from bellu.language import CODE as LANG_CODE
+from bellu.language import clean_user_text
 from bellu.perception.audio import resample_mono
 from bellu.types import ASRState
 
@@ -126,12 +128,14 @@ class IndicTranscribeASR(ASREngine):
     def __init__(
         self,
         model_id: str = "bodhan-ai/indic-transcribe-core",
-        language: Optional[str] = None,
+        language: Optional[str] = LANG_CODE,
         device: str = "cuda",
+        min_rms: float = 0.02,
     ) -> None:
         self.model_id = model_id
-        self.language = language
+        self.language = language or LANG_CODE
         self.device = device
+        self.min_rms = min_rms
         self._model = None
         self._last_text = ""
 
@@ -166,24 +170,25 @@ class IndicTranscribeASR(ASREngine):
     def transcribe(self, audio: np.ndarray, sample_rate: int, timestamp: float) -> ASRState:
         if self._model is None:
             self.load()
-        import soundfile as sf
 
         wav = resample_mono(audio, sample_rate, 16000)
+        rms = float(np.sqrt(np.mean(np.square(wav))) + 1e-9)
+        if rms < self.min_rms:
+            return ASRState(text="", is_final=False, language=self.language, timestamp=timestamp)
+
+        import soundfile as sf
+
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             path = tmp.name
         try:
             sf.write(path, wav, 16000)
-            kwargs = {}
-            if self.language:
-                kwargs["lang"] = self.language
+            kwargs = {"lang": self.language or LANG_CODE}
             text, lid = self._model.transcribe(path, return_lid=True, **kwargs)
         finally:
             Path(path).unlink(missing_ok=True)
 
-        text = (text or "").strip()
-        lang = None
-        if isinstance(lid, dict):
-            lang = lid.get("lang")
+        text = clean_user_text(text or "")
+        lang = self.language or LANG_CODE
         is_final = bool(text) and text == self._last_text
         self._last_text = text
         return ASRState(text=text, is_final=is_final, language=lang, timestamp=timestamp)

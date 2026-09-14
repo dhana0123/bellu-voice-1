@@ -1,3 +1,7 @@
+# Locked to Telugu while we iterate the duplex stack.
+language: te
+language_name: Telugu
+
 sample_rate: 16000
 event_loop_ms: 80
 asr_interval_ms: 400
@@ -7,10 +11,11 @@ ring_buffer_s: 8.0
 
 asr:
   model_id: bodhan-ai/indic-transcribe-core
-  language: null          # ISO code (hi, ta, te, ...) or null for auto LID
+  language: te
   device: cuda
   window_s: 3.0
   min_speech_ms: 250
+  min_rms: 0.02
 
 sta:
   repo_id: ASLP-lab/Easy-Turn
@@ -25,16 +30,19 @@ sta:
 
 llm:
   model_id: sarvamai/OpenHathi-7B-Hi-v0.1-Base
+  language: te
   device: auto
-  max_new_tokens: 256
-  temperature: 0.4
+  max_new_tokens: 96
+  temperature: 0.3
+  repetition_penalty: 1.25
   enable_thinking: false
   min_decision_interval_ms: 320
 
 tts:
-  model_id: parler-tts/parler-tts-mini-v1
+  model_id: ai4bharat/indic-parler-tts
+  language: te
   device: cuda
-  speaker: Laura
+  speaker: Lalitha
   play_steps_s: 0.5
   sample_rate: 44100
 

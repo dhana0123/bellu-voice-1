@@ -1,4 +1,10 @@
-from bellu.gating import needs_llm
+from bellu.language import collapse_repeats, clean_user_text
+
+
+def test_collapse_ho_ho_loop():
+    assert collapse_repeats("हो हो हो हो हो हो") == "हो हो"
+    assert clean_user_text("हो हो हो हो हो हो हो") == ""
+    assert "నమస్కారం" in clean_user_text("నమస్కారం ఎలా ఉన్నారు")
 from bellu.perception.turn_tags import parse_turn
 from bellu.protocol import SpeechCommand
 from bellu.types import ASRState, GlobalState, STAState, TurnState

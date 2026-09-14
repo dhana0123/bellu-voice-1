@@ -16,7 +16,15 @@ let lastUserText = "";
 let lastBotText = "";
 let connected = false;
 
-function addBubble(role, text) {
+function displayable(text) {
+  if (!text) return "";
+  const trimmed = String(text).trim();
+  if (trimmed.length > 180) return "";
+  if (/TRIGGER:|CURRENT SNAPSHOT|ASR transcript/i.test(trimmed)) return "";
+  const parts = trimmed.split(/\s+/);
+  if (parts.length >= 6 && new Set(parts).size <= 2) return "";
+  return trimmed;
+}
   if (!text) return;
   const el = document.createElement("div");
   el.className = `bubble ${role}`;
@@ -150,7 +158,7 @@ async function connect() {
     connectBtn.textContent = "Live";
     setStatus("live duplex", "ok");
     socket.send(JSON.stringify({ type: "hello", sr: audioCtx.sampleRate }));
-    addBubble("sys", "Connected — keep talking. The model listens continuously.");
+    addBubble("sys", "Connected — Telugu only. Keep talking.");
   };
 
   socket.onmessage = async (event) => {
@@ -165,12 +173,16 @@ async function connect() {
     if (data.type === "state") {
       if (data.transcript && data.transcript !== lastUserText) {
         lastUserText = data.transcript;
-        addBubble("user", data.transcript);
+        const shown = displayable(data.transcript);
+        if (shown) addBubble("user", shown);
       }
       if (data.last_text && data.last_text !== lastBotText) {
         lastBotText = data.last_text;
-        addBubble("bot", data.last_text);
-        speakFallback(data.last_text);
+        const shown = displayable(data.last_text);
+        if (shown) {
+          addBubble("bot", shown);
+          speakFallback(shown);
+        }
       }
       turnEl.textContent = `turn · ${data.turn || "—"} · ${data.assistant || "waiting"}`;
       if (typeof data.rms === "number") meterEl.textContent = `mic · ${(data.rms * 100).toFixed(1)}`;
@@ -244,4 +256,4 @@ fetch("/api/health")
   })
   .catch(() => setStatus("offline", "bad"));
 
-addBubble("sys", "Click Connect, allow the mic, then speak continuously.");
+addBubble("sys", "Click Connect, allow the mic, then speak Telugu.");

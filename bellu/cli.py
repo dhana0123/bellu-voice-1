@@ -57,14 +57,19 @@ def build_runtime(cfg: dict, mock: bool, for_ui: bool = False) -> DuplexRuntime:
         from bellu.perception.asr import IndicTranscribeASR
         from bellu.perception.mock_sta import MockSTA, MockTTS
 
-        asr = IndicTranscribeASR(cfg["asr"]["model_id"], cfg["asr"].get("language"), cfg["asr"].get("device", "cuda"))
+        asr = IndicTranscribeASR(
+            cfg["asr"]["model_id"],
+            cfg["asr"].get("language") or cfg.get("language") or "te",
+            cfg["asr"].get("device", "cuda"),
+            float(cfg["asr"].get("min_rms", 0.02)),
+        )
         brain = SarvamBrain(cfg["llm"])
         print("Loading ASR (Indic-Transcribe-core)...")
         asr.load()
-        clog("boot", "ASR ready")
+        clog("boot", "ASR ready lang=te")
         print(f"Loading LLM ({cfg['llm']['model_id']})...")
         brain.load()
-        clog("boot", f"LLM ready {cfg['llm']['model_id']}")
+        clog("boot", f"LLM ready {cfg['llm']['model_id']} lang=te")
 
         sta = MockSTA()
         if not for_ui:
@@ -86,7 +91,7 @@ def build_runtime(cfg: dict, mock: bool, for_ui: bool = False) -> DuplexRuntime:
             print("Loading TTS (ParlerTTS)...")
             tts = ParlerExpression(cfg["tts"])
             tts.load()
-            clog("boot", "TTS ready")
+            clog("boot", "TTS ready lang=te speaker=Lalitha")
         except Exception as exc:
             print(f"ParlerTTS unavailable ({exc}); text-only voice replies")
             clog("boot", f"TTS mock ({exc})")

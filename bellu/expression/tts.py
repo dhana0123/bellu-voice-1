@@ -12,7 +12,7 @@ from bellu.protocol import SpeechCommand, spoken_text
 AudioSink = Callable[[np.ndarray, int], None]
 
 
-def description_from_protocol(command: SpeechCommand, speaker: str = "Laura") -> str:
+def description_from_protocol(command: SpeechCommand, speaker: str = "Lalitha") -> str:
     style = command.style
     emotion = style.emotion.replace("_", " ")
     if style.pace >= 1.15:
@@ -24,7 +24,7 @@ def description_from_protocol(command: SpeechCommand, speaker: str = "Laura") ->
     laugh = " with a light laugh" if style.laugh >= 0.4 else ""
     smile = " a slight smile in the voice" if style.smile >= 0.4 else ""
     return (
-        f"{speaker} speaks {pace} with a {emotion} delivery{laugh}{smile}. "
+        f"{speaker} speaks {pace} in Telugu with a {emotion} delivery{laugh}{smile}. "
         f"Clear audio, close-mic recording, intensity {style.intensity:.2f}."
     )
 
@@ -67,7 +67,7 @@ class ParlerExpression:
         self.busy.set()
         clog("tts", f"start {clip(text)}")
         try:
-            self._stream(text, description_from_protocol(command, self.cfg.get("speaker", "Laura")), sink)
+            self._stream(text, description_from_protocol(command, self.cfg.get("speaker", "Lalitha")), sink)
             clog("tts", "done")
         except Exception as exc:
             clog("tts", f"FAIL {type(exc).__name__}: {exc}")
