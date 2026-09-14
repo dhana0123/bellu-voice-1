@@ -181,6 +181,11 @@ async function connect() {
       return;
     }
     const data = JSON.parse(event.data);
+    if (data.type === "audio_reset") {
+      if (audioCtx) playTime = audioCtx.currentTime;
+      if (window.speechSynthesis) window.speechSynthesis.cancel();
+      return;
+    }
     if (data.type === "state") {
       if (data.transcript && data.transcript !== lastUserText) {
         lastUserText = data.transcript;
@@ -190,10 +195,7 @@ async function connect() {
       if (data.last_text && data.last_text !== lastBotText) {
         lastBotText = data.last_text;
         const shown = displayable(data.last_text);
-        if (shown) {
-          addBubble("bot", shown);
-          speakFallback(shown);
-        }
+        if (shown) addBubble("bot", shown);
       }
       turnEl.textContent = `turn · ${data.turn || "—"} · ${data.assistant || "waiting"}`;
       if (typeof data.rms === "number") meterEl.textContent = `mic · ${(data.rms * 100).toFixed(1)}`;

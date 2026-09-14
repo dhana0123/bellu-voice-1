@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from threading import Event, Thread
+from time import sleep
 from typing import Callable
 
 import numpy as np
@@ -24,14 +25,16 @@ def description_from_protocol(command: SpeechCommand, speaker: str = "Lalitha") 
         pace = "at a moderate pace"
     laugh = " with a light laugh" if style.laugh >= 0.4 else ""
     smile = " a slight smile in the voice" if style.smile >= 0.4 else ""
+    pause = f" Brief pause of {command.timing.pause_before_ms} milliseconds." if command.timing.pause_before_ms else ""
+    nonverbal = f" {command.nonverbal}." if command.nonverbal else ""
     return (
-        f"{speaker} speaks {pace} in Telugu with a {emotion} delivery{laugh}{smile}. "
+        f"{speaker} speaks {pace} in Telugu with a {emotion} delivery{laugh}{smile}.{pause}{nonverbal} "
         f"Clear audio, close-mic recording, intensity {style.intensity:.2f}."
     )
 
 
 class ParlerExpression:
-    """Streaming ParlerTTS. Understands START / STREAM / PAUSE / RESUME / CANCEL via the protocol."""
+    """Generation runs on a worker. Chunks go to the PCM queue; playback is independent."""
 
     def __init__(self, cfg: dict) -> None:
         self.cfg = cfg
@@ -59,25 +62,30 @@ class ParlerExpression:
         self.cancel.set()
 
     def speak(self, command: SpeechCommand, sink: AudioSink) -> None:
-        self.speak_text(spoken_text(command), sink)
+        self.speak_async(command, sink)
 
     def speak_text(self, text: str, sink: AudioSink) -> None:
-        text = (text or "").strip()
+        self.speak_async(SpeechCommand(action=Action.SAY, text=text), sink)
+
+    def speak_async(self, command: SpeechCommand, sink: AudioSink) -> None:
+        text = spoken_text(command).strip()
         if not text or "\ufffd" in text:
             clog("tts", "skip broken text")
             return
+        Thread(target=self._run, args=(command, sink), daemon=True).start()
+
+    def _run(self, command: SpeechCommand, sink: AudioSink) -> None:
         if self.model is None:
             self.load()
         self.cancel.clear()
         self.busy.set()
-        clog("tts", f"stream {clip(text)}")
+        text = spoken_text(command)
+        clog("tts", f"generate {clip(text)}")
         try:
-            cmd = SpeechCommand(action=Action.SAY, text=text)
-            self._stream(text, description_from_protocol(cmd, self.cfg.get("speaker", "Lalitha")), sink)
-            clog("tts", "chunk done")
+            self._stream(text, description_from_protocol(command, self.cfg.get("speaker", "Lalitha")), sink)
+            clog("tts", "generate done")
         except Exception as exc:
             clog("tts", f"FAIL {type(exc).__name__}: {exc}")
-            raise
         finally:
             self.busy.clear()
 
@@ -107,36 +115,7 @@ class ParlerExpression:
             if chunk is None or np.asarray(chunk).size == 0:
                 break
             while self.paused.is_set() and not self.cancel.is_set():
-                pass
+                sleep(0.01)
             audio = np.asarray(chunk, dtype=np.float32)
             sink(audio, self.sample_rate)
         thread.join(timeout=0.1)
-
-
-class MockTTS:
-    def __init__(self, cfg: dict | None = None) -> None:
-        self.cancel = Event()
-        self.busy = Event()
-        self.last_text = ""
-
-    def load(self) -> None:
-        return
-
-    def cancel_playback(self) -> None:
-        self.cancel.set()
-
-    def speak(self, command: SpeechCommand, sink: AudioSink) -> None:
-        self.speak_text(spoken_text(command), sink)
-
-    def speak_text(self, text: str, sink: AudioSink) -> None:
-        from bellu.perception.audio import placeholder_speech
-
-        text = (text or "").strip()
-        self.last_text = text
-        if not text:
-            return
-        self.busy.set()
-        try:
-            sink(placeholder_speech(text, 16000), 16000)
-        finally:
-            self.busy.clear()

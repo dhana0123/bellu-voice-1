@@ -22,6 +22,14 @@ class TurnState(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
+class STAEvent(str, Enum):
+    SPEAKING = "SPEAKING"
+    HOLD = "HOLD"
+    END_OF_TURN = "END_OF_TURN"
+    INTERRUPTION = "INTERRUPTION"
+    BACKCHANNEL_OPPORTUNITY = "BACKCHANNEL_OPPORTUNITY"
+
+
 @dataclass
 class ASRState:
     text: str = ""
@@ -48,6 +56,7 @@ class STAState:
     interruption_probability: float = 0.0
     overlap: bool = False
     turn_state: TurnState = TurnState.UNKNOWN
+    event: STAEvent = STAEvent.HOLD
     raw_tag: str = ""
     easy_turn_transcript: str = ""
     timestamp: float = 0.0
@@ -93,6 +102,7 @@ class GlobalState:
                 "emotion_intensity": self.sta.emotion_intensity,
                 "speech_rate": self.sta.speech_rate,
                 "turn_state": self.sta.turn_state.value,
+                "sta_event": self.sta.event.value,
                 "turn_completion": self.sta.turn_completion,
                 "backchannel_opportunity": self.sta.backchannel_opportunity,
                 "interruption_probability": self.sta.interruption_probability,

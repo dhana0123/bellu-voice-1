@@ -49,6 +49,27 @@ class SpeechCommand:
         return payload
 
     @classmethod
+    def say(
+        cls,
+        text: str,
+        *,
+        emotion: str = "neutral",
+        intensity: float = 0.5,
+        pace: float = 1.0,
+        nonverbal: str = "",
+        pause_before_ms: int = 0,
+        reason: str = "say",
+    ) -> "SpeechCommand":
+        return cls(
+            action=Action.SAY,
+            text=text,
+            nonverbal=nonverbal,
+            style=Style(emotion=emotion, intensity=intensity, pace=pace),
+            timing=Timing(pause_before_ms=pause_before_ms),
+            reason=reason,
+        )
+
+    @classmethod
     def wait(cls, reason: str = "") -> "SpeechCommand":
         return cls(action=Action.WAIT, reason=reason)
 

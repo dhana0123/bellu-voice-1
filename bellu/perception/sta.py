@@ -10,7 +10,7 @@ import yaml
 
 from bellu.perception.audio import resample_mono, speech_rate
 from bellu.perception.turn_tags import parse_turn
-from bellu.types import STAState, TurnState
+from bellu.types import STAEvent, STAState, TurnState
 
 TURN_MAP = {
     TurnState.COMPLETE: dict(turn_completion=0.93, backchannel_opportunity=0.12, interruption_probability=0.05),
@@ -97,6 +97,15 @@ class EasyTurnSTA:
         irq = mapped["interruption_probability"]
         if overlap:
             irq = max(irq, 0.65)
+            event = STAEvent.INTERRUPTION
+        elif turn == TurnState.COMPLETE:
+            event = STAEvent.END_OF_TURN
+        elif turn == TurnState.BACKCHANNEL:
+            event = STAEvent.BACKCHANNEL_OPPORTUNITY
+        elif speaking:
+            event = STAEvent.SPEAKING
+        else:
+            event = STAEvent.HOLD
         return STAState(
             user_speaking=speaking,
             speech_rate=speech_rate(audio, sample_rate),
@@ -109,19 +118,8 @@ class EasyTurnSTA:
             interruption_probability=irq,
             overlap=overlap,
             turn_state=turn,
+            event=event,
             raw_tag=tag,
             easy_turn_transcript=transcript,
             timestamp=timestamp,
-        )
-
-
-class MockSTA:
-    def infer(self, audio: np.ndarray, sample_rate: int, timestamp: float, assistant_speaking: bool) -> STAState:
-        speaking = float(np.sqrt(np.mean(np.square(audio))) + 1e-9) > 0.015
-        return STAState(
-            user_speaking=speaking,
-            turn_completion=0.2 if speaking else 0.9,
-            backchannel_opportunity=0.8 if speaking else 0.1,
-            timestamp=timestamp,
-            turn_state=TurnState.INCOMPLETE if speaking else TurnState.COMPLETE,
         )

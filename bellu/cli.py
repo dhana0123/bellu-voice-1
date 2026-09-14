@@ -72,17 +72,16 @@ def build_runtime(cfg: dict, mock: bool, for_ui: bool = False) -> DuplexRuntime:
         clog("boot", f"LLM ready {cfg['llm']['model_id']} lang=te")
 
         sta = MockSTA()
-        if not for_ui:
-            try:
-                from bellu.perception.sta import EasyTurnSTA
+        try:
+            from bellu.perception.sta import EasyTurnSTA
 
-                print("Loading STA (Easy-Turn)...")
-                sta = EasyTurnSTA(cfg["sta"])
-                sta.load()
-                clog("boot", "STA ready")
-            except Exception as exc:
-                print(f"Easy-Turn unavailable ({exc}); using MockSTA")
-                clog("boot", f"STA mock ({exc})")
+            print("Loading STA (Easy-Turn)...")
+            sta = EasyTurnSTA(cfg["sta"])
+            sta.load()
+            clog("boot", "STA ready Easy-Turn")
+        except Exception as exc:
+            print(f"Easy-Turn unavailable ({exc}); using MockSTA energy EOT")
+            clog("boot", f"STA mock ({exc})")
 
         tts = MockTTS()
         try:

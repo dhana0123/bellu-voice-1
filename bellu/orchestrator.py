@@ -5,28 +5,18 @@ from threading import Event, Thread
 from time import sleep, time
 from typing import Any, Callable
 
+from bellu.expression.playout import PcmQueue
 from bellu.language import clean_spoken
 from bellu.log import clip, clog
 from bellu.memory import TemporalMemory
 from bellu.perception.audio import AudioRing
 from bellu.protocol import SpeechCommand
-from bellu.types import ASRState, Action, GlobalState, TurnState
-
-
-def _same_utterance(a: str, b: str) -> bool:
-    a, b = (a or "").strip(), (b or "").strip()
-    if not a or not b:
-        return False
-    if a == b:
-        return True
-    return a in b or b in a
+from bellu.types import ASRState, GlobalState, STAEvent, TurnState
+from bellu.utterance import UtteranceTracker
 
 
 class DuplexRuntime:
-    """DuplexCascade: mic IN streams always; LLM tokens flush straight into streaming TTS.
-
-    No speak queue. Token micro-turns go to TTS as they appear.
-    """
+    """IN (ASR+STA) always runs. One frozen utterance → one LLM. TTS generate ≠ playback."""
 
     def __init__(
         self,
@@ -48,13 +38,15 @@ class DuplexRuntime:
         self.state = GlobalState()
         self.memory = TemporalMemory()
         self.ring = AudioRing(cfg["sample_rate"], cfg["ring_buffer_s"])
+        self.utterance = UtteranceTracker()
+        self.pcm = PcmQueue(int(cfg.get("playback", {}).get("output_sample_rate") or 16000))
         self.stop = Event()
+        self.barge_in = Event()
         self.last_asr = 0.0
         self.last_sta = 0.0
         self.last_llm = 0.0
         self.last_command: SpeechCommand | None = None
         self.last_trigger = "in"
-        self.last_handled_transcript = ""
         self._last_asr_log = ""
         self._last_sta_log = ""
         self._asr_busy = Event()
@@ -66,23 +58,25 @@ class DuplexRuntime:
         self._loop_thread: Thread | None = None
         self.mode = "live"
         self.on_tts: Callable | None = None
+        self.on_audio_reset: Callable | None = None
 
     def start(self, use_microphone: bool = True) -> None:
         if self._in_thread and self._in_thread.is_alive():
             return
         self.stop.clear()
+        self.barge_in.clear()
         if use_microphone and self.microphone_factory is not None:
             self._mic = self.microphone_factory(self.cfg["sample_rate"], self.ring.push)
             self._mic.start()
         self._in_thread = Thread(target=self._in_loop, name="bellu-in", daemon=True)
         self._loop_thread = self._in_thread
         self._in_thread.start()
-        clog("loop", f"stream IN+TTS token mic={'on' if self._mic else 'browser'}")
+        clog("loop", "IN always; STA EOT → one LLM; TTS queue")
         self._note("system", "duplex streams started")
 
     def halt(self) -> None:
         self.stop.set()
-        self.tts.cancel_playback()
+        self.interrupt()
         if self._mic is not None:
             self._mic.stop()
             self._mic = None
@@ -101,13 +95,18 @@ class DuplexRuntime:
         self.ring.push(chunk)
 
     def interrupt(self) -> None:
+        self.barge_in.set()
         self.tts.cancel_playback()
+        self.pcm.clear()
         self.state.assistant.speaking = False
         self.state.assistant.current_action = "interrupted"
-        clog("out", "stop (user)")
+        clog("out", "stop (interrupt)")
         self._note("system", "interrupt")
+        if self.on_audio_reset is not None:
+            self.on_audio_reset()
 
     def view(self) -> dict[str, Any]:
+        u = self.utterance.current
         return {
             "running": bool(self._in_thread and self._in_thread.is_alive() and not self.stop.is_set()),
             "mode": self.mode,
@@ -117,6 +116,9 @@ class DuplexRuntime:
             "last_trigger": self.last_trigger,
             "context": self.memory.prompt_block(self.state),
             "log": list(self.ui_log),
+            "utterance_id": u.utterance_id,
+            "utterance_frozen": u.frozen,
+            "pcm_pending": self.pcm.pending(),
         }
 
     def _note(self, kind: str, text: str) -> None:
@@ -124,10 +126,20 @@ class DuplexRuntime:
         if kind == "error":
             clog("error", text)
 
+    def _assistant_live(self) -> bool:
+        generating = bool(getattr(self.tts, "busy", Event()).is_set())
+        return generating or self.pcm.pending() > 0
+
     def _audio_sink(self, audio, sr) -> None:
+        epoch = self.pcm.epoch
+        if self.barge_in.is_set():
+            return
+        raw = self.pcm.push(audio, sr, epoch)
+        if raw is None:
+            return
         self.speaker.play(audio, sr)
         if self.on_tts is not None:
-            self.on_tts(audio, sr)
+            self.on_tts(raw, self.pcm.play_sr)
 
     def _in_loop(self) -> None:
         tick = self.cfg["event_loop_ms"] / 1000.0
@@ -137,26 +149,35 @@ class DuplexRuntime:
             now = time()
             self.state.time = now
             self.state.rms = self.ring.rms
-            self.state.sta.user_speaking = self.ring.speaking
-            self.state.sta.pause_ms = self.ring.pause_ms()
-            tts_busy = bool(getattr(self.tts, "busy", Event()).is_set())
-            self.state.assistant.speaking = tts_busy
-            if not tts_busy and not self._asr_busy.is_set() and now - self.last_asr >= asr_every:
+            live = self._assistant_live()
+            self.state.assistant.speaking = live
+            if self.barge_in.is_set() and not bool(getattr(self.tts, "busy", Event()).is_set()):
+                self.barge_in.clear()
+            if not self._asr_busy.is_set() and now - self.last_asr >= asr_every:
                 self._asr_busy.set()
                 Thread(target=self._asr_once, daemon=True).start()
             if not self._sta_busy.is_set() and now - self.last_sta >= sta_every:
                 self._sta_busy.set()
                 Thread(target=self._sta_once, daemon=True).start()
-            asr = (self.state.asr.text or "").strip()
-            paused = self.ring.pause_ms() >= 450
+            event = self.state.sta.event
+            if event == STAEvent.INTERRUPTION and live:
+                self.interrupt()
+                self.utterance.begin_speech()
+            elif event == STAEvent.SPEAKING:
+                self.utterance.begin_speech()
+            elif event == STAEvent.END_OF_TURN:
+                if self.utterance.freeze():
+                    frozen = self.utterance.current.final_transcript
+                    self.state.asr.is_final = True
+                    self.state.asr.text = frozen
+                    clog("in", f"eot utt={self.utterance.current.utterance_id} {clip(frozen)}")
             if (
-                not self._llm_busy.is_set()
-                and not tts_busy
-                and paused
-                and asr
-                and not _same_utterance(asr, self.last_handled_transcript)
+                event == STAEvent.END_OF_TURN
+                and self.utterance.ready_for_llm()
+                and not self._llm_busy.is_set()
             ):
                 self._llm_busy.set()
+                self.utterance.mark_handled()
                 Thread(target=self._llm_once, daemon=True).start()
             sleep(tick)
 
@@ -179,6 +200,9 @@ class DuplexRuntime:
             self._last_asr_log = line
             clog("in", f"asr {line}")
         if asr_state.text:
+            self.utterance.ingest_asr(asr_state.text)
+            asr_state.text = self.utterance.current.final_transcript or self.utterance.current.text
+            asr_state.is_final = self.utterance.current.frozen
             self.state.asr = asr_state
             kind = "user_final" if asr_state.is_final else "user_partial"
             self.memory.add(kind, asr_state.text, now)
@@ -194,17 +218,16 @@ class DuplexRuntime:
                 audio,
                 self.cfg["sample_rate"],
                 now,
-                assistant_speaking=self.state.assistant.speaking,
+                assistant_speaking=self._assistant_live(),
             )
         except Exception as exc:
             clog("in", f"sta FAIL {type(exc).__name__}: {exc}")
             self._sta_busy.clear()
             return
-        sta_state.pause_ms = self.ring.pause_ms()
-        sta_state.interruption_probability = 0.0
-        sta_state.overlap = False
+        if not sta_state.pause_ms:
+            sta_state.pause_ms = self.ring.pause_ms()
         self.state.sta = sta_state
-        sta_line = f"{sta_state.turn_state.value} complete={sta_state.turn_completion:.2f}"
+        sta_line = f"{sta_state.event.value} {sta_state.turn_state.value} complete={sta_state.turn_completion:.2f}"
         if sta_line != self._last_sta_log:
             self._last_sta_log = sta_line
             clog("in", f"sta {sta_line}")
@@ -212,25 +235,28 @@ class DuplexRuntime:
 
     def _on_llm_tokens(self, piece: str) -> None:
         piece = clean_spoken(piece or "")
-        if not piece or self.stop.is_set():
-            clog("out", "skip junk phrase")
+        if not piece or self.stop.is_set() or self.barge_in.is_set():
+            clog("out", "skip phrase")
             return
-        cmd = SpeechCommand(action=Action.SAY, text=piece, reason="micro_turn")
+        cmd = SpeechCommand.say(piece, reason="eot_reply")
         self.last_command = cmd
         self.state.assistant.current_action = "say"
         self.state.assistant.last_text = piece
         self.memory.add("assistant_say", piece)
-        self._note("protocol", f"SAY {clip(piece)}")
+        self._note("protocol", f"SAY emotion={cmd.style.emotion} pace={cmd.style.pace} {clip(piece)}")
         clog("out", f"phrase→tts {clip(piece)}")
         try:
-            self.tts.speak_text(piece, self._audio_sink)
+            speak = getattr(self.tts, "speak_async", None) or getattr(self.tts, "speak")
+            speak(cmd, self._audio_sink)
         except Exception as exc:
             clog("tts", f"FAIL {type(exc).__name__}: {exc}")
 
     def _llm_once(self) -> None:
-        asr = (self.state.asr.text or "").strip()
-        self.last_handled_transcript = asr
+        self.barge_in.clear()
+        asr = (self.utterance.current.final_transcript or self.state.asr.text or "").strip()
         self.last_llm = time()
+        self.last_trigger = "eot"
+        clog("llm", f"utt={self.utterance.current.utterance_id} asr={clip(asr)!r}")
         try:
             self.brain.stream_reply(asr, self._on_llm_tokens)
         except Exception as exc:
@@ -243,13 +269,18 @@ class DuplexRuntime:
         if not text:
             return
         now = time()
+        self.utterance.begin_speech()
+        self.utterance.ingest_asr(text)
+        self.utterance.freeze()
         self.state.asr = ASRState(text=text, is_final=True, timestamp=now)
         self.state.sta.user_speaking = False
         self.state.sta.turn_completion = 0.95
         self.state.sta.turn_state = TurnState.COMPLETE
+        self.state.sta.event = STAEvent.END_OF_TURN
         self.memory.add("user_final", text, now)
         clog("in", f"text {clip(text)}")
         self._note("user_final", text)
-        if not self._llm_busy.is_set():
+        if self.utterance.ready_for_llm() and not self._llm_busy.is_set():
             self._llm_busy.set()
+            self.utterance.mark_handled()
             Thread(target=self._llm_once, daemon=True).start()

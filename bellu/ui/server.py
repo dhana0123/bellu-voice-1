@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections import deque
 from pathlib import Path
-from threading import Lock
 from typing import Any
 
 import numpy as np
@@ -25,32 +23,25 @@ class ChatIn(BaseModel):
 
 
 def create_app(runtime, mode: str, model_id: str | None = None) -> FastAPI:
-    """Moshi-style continuous duplex: browser streams mic PCM, server streams state + TTS."""
-
     app = FastAPI(title="Bellu")
     live_model = model_id or "sarvamai/OpenHathi-7B-Hi-v0.1-Base"
-    audio_out: deque[bytes] = deque(maxlen=64)
-    audio_lock = Lock()
     loop_holder: dict[str, Any] = {"loop": None, "ws": None}
 
-    def on_tts(audio: np.ndarray, sr: int) -> None:
-        pcm = resample_mono(np.asarray(audio, dtype=np.float32).reshape(-1), sr, 16000)
-        peak = float(np.max(np.abs(pcm))) if pcm.size else 0.0
-        raw = (np.clip(pcm, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
-        clog("tts", f"audio {len(raw)} bytes peak={peak:.3f} sr={sr}")
-        if pcm.size == 0 or peak < 0.02:
-            clog("tts", f"skip quiet chunk peak={peak:.3f}")
-            return
-        with audio_lock:
-            audio_out.append(raw)
+    def on_tts(raw: bytes, sr: int) -> None:
+        clog("tts", f"queue {len(raw)} bytes sr={sr} pending={runtime.pcm.pending()}")
         loop = loop_holder.get("loop")
         ws = loop_holder.get("ws")
         if loop and ws:
-            asyncio.run_coroutine_threadsafe(_flush_audio(ws, audio_out, audio_lock), loop)
-        else:
-            clog("tts", "no websocket to send audio")
+            asyncio.run_coroutine_threadsafe(_flush_pcm(ws, runtime), loop)
+
+    def on_audio_reset() -> None:
+        loop = loop_holder.get("loop")
+        ws = loop_holder.get("ws")
+        if loop and ws:
+            asyncio.run_coroutine_threadsafe(ws.send_json({"type": "audio_reset"}), loop)
 
     runtime.on_tts = on_tts
+    runtime.on_audio_reset = on_audio_reset
     runtime.mode = mode
 
     if STATIC.exists():
@@ -88,6 +79,7 @@ def create_app(runtime, mode: str, model_id: str | None = None) -> FastAPI:
         clog("ws", "client connected")
         runtime.start(use_microphone=False)
         last_log = 0
+        flusher = asyncio.create_task(_playback_pump(socket, runtime, loop_holder))
         try:
             await socket.send_json({"type": "hello", "mode": mode, "model": live_model, "sr": 16000})
             while True:
@@ -112,6 +104,7 @@ def create_app(runtime, mode: str, model_id: str | None = None) -> FastAPI:
                     elif kind == "interrupt":
                         clog("ws", "interrupt")
                         runtime.interrupt()
+                        await socket.send_json({"type": "audio_reset"})
                         await socket.send_json({"type": "state", **_thin_state(runtime)})
                     elif kind == "ping":
                         await socket.send_json({"type": "pong", **_thin_state(runtime)})
@@ -135,18 +128,20 @@ def create_app(runtime, mode: str, model_id: str | None = None) -> FastAPI:
                             "type": "state",
                             "rms": view.get("rms"),
                             "transcript": user.get("transcript") or "",
-                            "turn": user.get("turn_state"),
+                            "turn": user.get("sta_event") or user.get("turn_state"),
                             "assistant": (snap.get("assistant") or {}).get("current_action"),
                             "speaking_user": user.get("speaking"),
                             "speaking_bot": (snap.get("assistant") or {}).get("speaking"),
                             "last_text": runtime.state.assistant.last_text or "",
                             "trigger": runtime.last_trigger,
+                            "utterance_id": view.get("utterance_id"),
+                            "pcm_pending": view.get("pcm_pending"),
                         }
                     )
-                    await _flush_audio(socket, audio_out, audio_lock)
         except WebSocketDisconnect:
             clog("ws", "client disconnected")
         finally:
+            flusher.cancel()
             if loop_holder.get("ws") is socket:
                 loop_holder["ws"] = None
 
@@ -162,13 +157,24 @@ def _thin_state(runtime) -> dict[str, Any]:
         "transcript": user.get("transcript") or "",
         "running": view.get("running"),
         "last_text": runtime.state.assistant.last_text or "",
+        "turn": user.get("sta_event") or user.get("turn_state"),
     }
 
 
-async def _flush_audio(socket: WebSocket, queue: deque, lock: Lock) -> None:
+async def _flush_pcm(socket: WebSocket, runtime) -> None:
     while True:
-        with lock:
-            if not queue:
-                return
-            chunk = queue.popleft()
+        chunk = runtime.pcm.pop()
+        if not chunk:
+            return
         await socket.send_bytes(chunk)
+
+
+async def _playback_pump(socket: WebSocket, runtime, loop_holder: dict) -> None:
+    try:
+        while loop_holder.get("ws") is socket:
+            await _flush_pcm(socket, runtime)
+            await asyncio.sleep(0.04)
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        return
