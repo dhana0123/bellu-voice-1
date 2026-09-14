@@ -79,6 +79,11 @@ def clean_spoken(text: str) -> str:
     text = text.split("\n", 1)[0].strip()
     if "వినేవాడు" in text:
         text = text.split("వినేవాడు", 1)[0].strip()
+    # Broken tokenizer output (U+FFFD) must never reach TTS.
+    if "\ufffd" in text:
+        return ""
+    text = "".join(ch for ch in text if ch == " " or _TE.match(ch) or ch in ".,!?-–—")
+    text = " ".join(text.split())
     if not looks_locked(text):
         return ""
     te = len(_TE.findall(text))

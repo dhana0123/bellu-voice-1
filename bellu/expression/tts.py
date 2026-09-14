@@ -63,7 +63,8 @@ class ParlerExpression:
 
     def speak_text(self, text: str, sink: AudioSink) -> None:
         text = (text or "").strip()
-        if not text:
+        if not text or "\ufffd" in text:
+            clog("tts", "skip broken text")
             return
         if self.model is None:
             self.load()
