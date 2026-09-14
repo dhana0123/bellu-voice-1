@@ -10,6 +10,33 @@ from bellu.protocol import SpeechCommand
 from bellu.types import GlobalState
 
 
+def _ensure_sarvam_transformers() -> None:
+    """Sarvam remote code imports ALL_ATTENTION_FUNCTIONS from modeling_utils (transformers 4.51–4.57)."""
+
+    import transformers.modeling_utils as modeling_utils
+
+    if hasattr(modeling_utils, "ALL_ATTENTION_FUNCTIONS"):
+        return
+    for path in (
+        "transformers.masking_utils",
+        "transformers.modeling_flash_attention_utils",
+        "transformers.integrations.sdpa_attention",
+        "transformers",
+    ):
+        try:
+            module = __import__(path, fromlist=["ALL_ATTENTION_FUNCTIONS", "AttentionInterface"])
+        except Exception:
+            continue
+        obj = getattr(module, "ALL_ATTENTION_FUNCTIONS", None) or getattr(module, "AttentionInterface", None)
+        if obj is not None:
+            modeling_utils.ALL_ATTENTION_FUNCTIONS = obj
+            return
+    raise ImportError(
+        "Sarvam-30B needs transformers 4.51–4.57 (not 4.44 and not 5.x). "
+        "Run: pip install 'transformers>=4.51.3,<5'"
+    )
+
+
 class SarvamBrain:
     """Sarvam-30B as the duplex controller. Outputs Speech Protocol JSON, not acoustics."""
 
@@ -19,9 +46,13 @@ class SarvamBrain:
         self.model = None
 
     def load(self) -> None:
+        _ensure_sarvam_transformers()
         name = self.cfg["model_id"]
         self.tokenizer = AutoTokenizer.from_pretrained(name, trust_remote_code=True)
-        kwargs: dict[str, Any] = {"trust_remote_code": True}
+        kwargs: dict[str, Any] = {
+            "trust_remote_code": True,
+            "torch_dtype": torch.bfloat16,
+        }
         device = self.cfg.get("device", "auto")
         if device == "auto":
             kwargs["device_map"] = "auto"
