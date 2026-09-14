@@ -5,10 +5,11 @@ from threading import Event, Thread
 from time import sleep, time
 from typing import Any, Callable
 
+from bellu.language import clean_spoken
 from bellu.log import clip, clog
 from bellu.memory import TemporalMemory
 from bellu.perception.audio import AudioRing
-from bellu.language import clean_spoken
+from bellu.protocol import SpeechCommand
 from bellu.types import ASRState, Action, GlobalState, TurnState
 
 
