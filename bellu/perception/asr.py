@@ -18,6 +18,31 @@ class ASREngine(ABC):
         raise NotImplementedError
 
 
+def _patch_dynamic_cache_layers() -> None:
+    """Indic-Canary reads cross_cache.layers[i].keys; older transformers only expose key_cache."""
+
+    try:
+        from transformers.cache_utils import DynamicCache
+    except ImportError:
+        return
+
+    if getattr(DynamicCache, "_bellu_layers_patched", False):
+        return
+
+    from types import SimpleNamespace
+
+    @property
+    def layers(self):
+        key_cache = getattr(self, "key_cache", None)
+        value_cache = getattr(self, "value_cache", None)
+        if key_cache is None or value_cache is None:
+            raise AttributeError(f"{type(self).__name__} has no key_cache/value_cache")
+        return [SimpleNamespace(keys=k, values=v) for k, v in zip(key_cache, value_cache)]
+
+    DynamicCache.layers = layers  # type: ignore[attr-defined]
+    DynamicCache._bellu_layers_patched = True
+
+
 def _patch_generation_config() -> None:
     from transformers.generation.configuration_utils import GenerationConfig
 
@@ -98,6 +123,7 @@ class IndicTranscribeASR(ASREngine):
             sys.path.insert(0, model_dir)
 
         _patch_generation_config()
+        _patch_dynamic_cache_layers()
         _patch_indic_canary(model_dir)
 
         from indic_transcribe import IndicTranscribe  # type: ignore

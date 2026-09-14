@@ -27,7 +27,7 @@ dependencies = [
   "librosa",
   "torch",
   "torchaudio",
-  "transformers>=4.51.3,<5",
+  "transformers>=4.56.0,<5",
   "accelerate",
   "huggingface_hub",
   "sentencepiece",
