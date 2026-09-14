@@ -1,21 +1,8 @@
 from __future__ import annotations
 
 import numpy as np
-import sounddevice as sd
 
 from bellu.perception.audio import resample_mono
-
-
-class Speaker:
-    def __init__(self, sample_rate: int = 16000) -> None:
-        self.sample_rate = sample_rate
-
-    def play(self, audio: np.ndarray, src_sr: int) -> None:
-        wav = resample_mono(audio, src_sr, self.sample_rate)
-        try:
-            sd.play(wav, self.sample_rate, blocking=False)
-        except Exception:
-            pass
 
 
 class NullSpeaker:
@@ -26,6 +13,20 @@ class NullSpeaker:
         return
 
 
+class Speaker:
+    def __init__(self, sample_rate: int = 16000) -> None:
+        self.sample_rate = sample_rate
+
+    def play(self, audio: np.ndarray, src_sr: int) -> None:
+        import sounddevice as sd
+
+        wav = resample_mono(audio, src_sr, self.sample_rate)
+        try:
+            sd.play(wav, self.sample_rate, blocking=False)
+        except Exception:
+            pass
+
+
 class Microphone:
     def __init__(self, sample_rate: int, on_chunk) -> None:
         self.sample_rate = sample_rate
@@ -33,6 +34,8 @@ class Microphone:
         self.stream = None
 
     def start(self) -> None:
+        import sounddevice as sd
+
         def callback(indata, frames, time_info, status):
             self.on_chunk(np.asarray(indata[:, 0], dtype=np.float32))
 

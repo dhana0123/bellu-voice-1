@@ -84,11 +84,14 @@ def build_runtime(cfg: dict, mock: bool, for_ui: bool = False) -> DuplexRuntime:
         except Exception as exc:
             print(f"ParlerTTS unavailable ({exc}); text-only voice replies")
 
-    from bellu.io.devices import Microphone, NullSpeaker, Speaker
+    from bellu.io.devices import NullSpeaker
 
     if for_ui:
         speaker = NullSpeaker(cfg["playback"]["output_sample_rate"])
         return DuplexRuntime(cfg, asr, sta, brain, tts, speaker, None)
+
+    from bellu.io.devices import Microphone, Speaker
+
     speaker = Speaker(cfg["playback"]["output_sample_rate"])
     return DuplexRuntime(cfg, asr, sta, brain, tts, speaker, Microphone)
 
