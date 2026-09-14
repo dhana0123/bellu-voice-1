@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from collections import deque
+from queue import Empty, Queue
 from threading import Event, Thread
 from time import sleep, time
 from typing import Any, Callable
 
-from bellu.gating import needs_llm
 from bellu.log import clip, clog
 from bellu.memory import TemporalMemory
 from bellu.perception.audio import AudioRing
@@ -14,7 +14,12 @@ from bellu.types import ASRState, Action, GlobalState, TurnState
 
 
 class DuplexRuntime:
-    """80 ms orchestrator. Perception always runs. The LLM only runs on gated events."""
+    """Two parallel streams, never stopping each other.
+
+    IN  : mic ring → ASR / STA → memory  (always)
+    OUT : speak queue → TTS → speakers   (always)
+    LLM : reads memory, enqueues SAY; never cancels OUT except UI Stop.
+    """
 
     def __init__(
         self,
@@ -41,30 +46,40 @@ class DuplexRuntime:
         self.last_sta = 0.0
         self.last_llm = 0.0
         self.last_command: SpeechCommand | None = None
-        self.last_trigger = ""
+        self.last_trigger = "in"
         self.last_handled_transcript = ""
         self._last_asr_log = ""
         self._last_sta_log = ""
+        self._asr_busy = Event()
+        self._sta_busy = Event()
+        self._llm_busy = Event()
+        self._speak_q: Queue[SpeechCommand] = Queue(maxsize=8)
         self.ui_log: deque[dict[str, Any]] = deque(maxlen=80)
         self._mic = None
+        self._in_thread: Thread | None = None
+        self._out_thread: Thread | None = None
         self._loop_thread: Thread | None = None
         self.mode = "live"
         self.on_tts: Callable | None = None
 
     def start(self, use_microphone: bool = True) -> None:
-        if self._loop_thread and self._loop_thread.is_alive():
+        if self._in_thread and self._in_thread.is_alive():
             return
         self.stop.clear()
         if use_microphone and self.microphone_factory is not None:
             self._mic = self.microphone_factory(self.cfg["sample_rate"], self.ring.push)
             self._mic.start()
-        self._loop_thread = Thread(target=self._loop, daemon=True)
-        self._loop_thread.start()
-        clog("loop", f"started mic={'on' if self._mic else 'browser'}")
-        self._note("system", "event loop started")
+        self._in_thread = Thread(target=self._in_loop, name="bellu-in", daemon=True)
+        self._out_thread = Thread(target=self._out_loop, name="bellu-out", daemon=True)
+        self._loop_thread = self._in_thread
+        self._in_thread.start()
+        self._out_thread.start()
+        clog("loop", f"IN+OUT parallel mic={'on' if self._mic else 'browser'}")
+        self._note("system", "duplex streams started")
 
     def halt(self) -> None:
         self.stop.set()
+        self.tts.cancel_playback()
         if self._mic is not None:
             self._mic.stop()
             self._mic = None
@@ -83,20 +98,26 @@ class DuplexRuntime:
         self.ring.push(chunk)
 
     def interrupt(self) -> None:
+        while True:
+            try:
+                self._speak_q.get_nowait()
+            except Empty:
+                break
         self.tts.cancel_playback()
         self.state.assistant.speaking = False
         self.state.assistant.current_action = "interrupted"
-        clog("loop", "interrupt")
+        clog("out", "stop (user)")
         self._note("system", "interrupt")
 
     def view(self) -> dict[str, Any]:
         return {
-            "running": bool(self._loop_thread and self._loop_thread.is_alive() and not self.stop.is_set()),
+            "running": bool(self._in_thread and self._in_thread.is_alive() and not self.stop.is_set()),
             "mode": self.mode,
             "rms": round(self.ring.rms, 4),
             "snapshot": self.state.snapshot(),
             "last_command": self.last_command.to_dict() if self.last_command else None,
             "last_trigger": self.last_trigger,
+            "context": self.memory.prompt_block(self.state),
             "log": list(self.ui_log),
         }
 
@@ -105,126 +126,139 @@ class DuplexRuntime:
         if kind == "error":
             clog("error", text)
 
-    def _loop(self) -> None:
+    def _in_loop(self) -> None:
         tick = self.cfg["event_loop_ms"] / 1000.0
         asr_every = self.cfg["asr_interval_ms"] / 1000.0
         sta_every = self.cfg["sta_interval_ms"] / 1000.0
         while not self.stop.is_set():
             now = time()
             self.state.time = now
+            self.state.rms = self.ring.rms
             self.state.sta.user_speaking = self.ring.speaking
             self.state.sta.pause_ms = self.ring.pause_ms()
-            self.state.assistant.speaking = bool(getattr(self.tts, "busy", Event()).is_set())
-
-            if now - self.last_asr >= asr_every:
-                self.last_asr = now
-                audio = self.ring.window(self.cfg["asr"]["window_s"])
-                t0 = time()
-                try:
-                    asr_state = self.asr.transcribe(audio, self.cfg["sample_rate"], now)
-                except Exception as exc:
-                    clog("asr", f"FAIL {type(exc).__name__}: {exc}")
-                    self._note("error", f"asr: {exc}")
-                    sleep(tick)
-                    continue
-                ms = (time() - t0) * 1000
-                shown = clip(asr_state.text) or "(silence)"
-                line = f"{ms:.0f}ms {asr_state.language or '-'} {shown}"
-                if line != self._last_asr_log:
-                    self._last_asr_log = line
-                    clog("asr", line)
-                if asr_state.text:
-                    self.state.asr = asr_state
-                    kind = "user_final" if asr_state.is_final else "user_partial"
-                    self.memory.add(kind, asr_state.text, now)
-                    self._note(kind, asr_state.text)
-
-            if now - self.last_sta >= sta_every:
-                self.last_sta = now
-                audio = self.ring.window(self.cfg["sta"]["window_s"])
-                try:
-                    sta_state = self.sta.infer(
-                        audio,
-                        self.cfg["sample_rate"],
-                        now,
-                        assistant_speaking=self.state.assistant.speaking,
-                    )
-                except Exception as exc:
-                    clog("sta", f"FAIL {type(exc).__name__}: {exc}")
-                    self._note("error", f"sta: {exc}")
-                    sleep(tick)
-                    continue
-                sta_state.pause_ms = self.ring.pause_ms()
-                self.state.sta = sta_state
-                sta_line = (
-                    f"{sta_state.turn_state.value} complete={sta_state.turn_completion:.2f} "
-                    f"bc={sta_state.backchannel_opportunity:.2f} irq={sta_state.interruption_probability:.2f}"
-                )
-                if sta_line != self._last_sta_log:
-                    self._last_sta_log = sta_line
-                    clog("sta", sta_line)
-                self.memory.add("sta", f"{sta_state.turn_state.value} {sta_state.easy_turn_transcript}", now)
-
-            gating = {**self.cfg.get("gating", {}), "min_decision_interval_ms": self.cfg["llm"].get("min_decision_interval_ms", 320)}
-            decision = needs_llm(self.state, gating, self.last_llm)
-            if decision.needed:
-                transcript = (self.state.asr.text or "").strip()
-                if decision.reason in {"turn_complete", "asr_final", "backchannel_opportunity"}:
-                    if transcript and transcript == self.last_handled_transcript:
-                        sleep(tick)
-                        continue
-                self.last_llm = now
-                self.last_trigger = decision.reason
-                clog("gate", f"{decision.reason} asr={clip(transcript, 80)!r}")
-                if transcript and decision.reason in {"turn_complete", "asr_final", "typed_turn"}:
-                    self.last_handled_transcript = transcript
-                try:
-                    command = self.brain.decide(
-                        self.state,
-                        self.memory.prompt_block(self.state.snapshot()),
-                        decision.reason,
-                    )
-                except Exception as exc:
-                    self._note("error", f"llm: {exc}")
-                    command = SpeechCommand.wait(reason=f"llm_error:{type(exc).__name__}")
-                self._apply(command)
+            tts_busy = bool(getattr(self.tts, "busy", Event()).is_set())
+            self.state.assistant.speaking = tts_busy
+            if not self._asr_busy.is_set() and now - self.last_asr >= asr_every:
+                self._asr_busy.set()
+                Thread(target=self._asr_once, daemon=True).start()
+            if not self._sta_busy.is_set() and now - self.last_sta >= sta_every:
+                self._sta_busy.set()
+                Thread(target=self._sta_once, daemon=True).start()
+            if not self._llm_busy.is_set() and not tts_busy:
+                self._llm_busy.set()
+                Thread(target=self._llm_once, daemon=True).start()
             sleep(tick)
 
-    def _apply(self, command: SpeechCommand) -> None:
-        self.last_command = command
-        self.state.assistant.current_action = command.action.value.lower()
-        spoken = spoken_text(command) or command.reason
-        clog("proto", f"{command.action.value} {clip(spoken)}")
-        self._note("protocol", f"{command.action.value} {spoken}".strip())
-        if command.action in {Action.STOP, Action.INTERRUPT}:
-            self.tts.cancel_playback()
-            self.state.assistant.speaking = False
-        if command.action == Action.WAIT:
-            return
-        if command.action == Action.CONTINUE:
-            getattr(self.tts, "paused", Event()).clear()
-            return
+    def _out_loop(self) -> None:
+        while not self.stop.is_set():
+            try:
+                command = self._speak_q.get(timeout=0.08)
+            except Empty:
+                continue
+            text = spoken_text(command)
+            if not text:
+                continue
+            self.state.assistant.last_text = text
+            self.memory.add("assistant_say", text)
 
-        text = spoken_text(command)
-        if not text:
-            return
-        self.memory.add("assistant_say", text)
-        self.state.assistant.last_text = text
+            def sink(audio, sr, _cmd=command):
+                self.speaker.play(audio, sr)
+                if self.on_tts is not None:
+                    self.on_tts(audio, sr)
 
-        def sink(audio, sr):
-            self.speaker.play(audio, sr)
-            if self.on_tts is not None:
-                self.on_tts(audio, sr)
-
-        def _speak() -> None:
+            clog("out", f"speak {clip(text)}")
             try:
                 self.tts.speak(command, sink)
             except Exception as exc:
                 clog("tts", f"FAIL {type(exc).__name__}: {exc}")
                 self._note("error", f"tts: {exc}")
 
-        clog("tts", f"speak {clip(text)}")
-        Thread(target=_speak, daemon=True).start()
+    def _asr_once(self) -> None:
+        now = time()
+        self.last_asr = now
+        audio = self.ring.window(self.cfg["asr"]["window_s"])
+        t0 = time()
+        try:
+            asr_state = self.asr.transcribe(audio, self.cfg["sample_rate"], now)
+        except Exception as exc:
+            clog("in", f"asr FAIL {type(exc).__name__}: {exc}")
+            self._note("error", f"asr: {exc}")
+            self._asr_busy.clear()
+            return
+        ms = (time() - t0) * 1000
+        shown = clip(asr_state.text) or "(silence)"
+        line = f"{ms:.0f}ms {asr_state.language or '-'} {shown}"
+        if line != self._last_asr_log:
+            self._last_asr_log = line
+            clog("in", f"asr {line}")
+        if asr_state.text:
+            self.state.asr = asr_state
+            kind = "user_final" if asr_state.is_final else "user_partial"
+            self.memory.add(kind, asr_state.text, now)
+            self._note(kind, asr_state.text)
+        self._asr_busy.clear()
+
+    def _sta_once(self) -> None:
+        now = time()
+        self.last_sta = now
+        audio = self.ring.window(self.cfg["sta"]["window_s"])
+        try:
+            sta_state = self.sta.infer(
+                audio,
+                self.cfg["sample_rate"],
+                now,
+                assistant_speaking=self.state.assistant.speaking,
+            )
+        except Exception as exc:
+            clog("in", f"sta FAIL {type(exc).__name__}: {exc}")
+            self._sta_busy.clear()
+            return
+        sta_state.pause_ms = self.ring.pause_ms()
+        sta_state.interruption_probability = 0.0
+        sta_state.overlap = False
+        self.state.sta = sta_state
+        sta_line = f"{sta_state.turn_state.value} complete={sta_state.turn_completion:.2f}"
+        if sta_line != self._last_sta_log:
+            self._last_sta_log = sta_line
+            clog("in", f"sta {sta_line}")
+        self._sta_busy.clear()
+
+    def _llm_once(self) -> None:
+        now = time()
+        self.last_llm = now
+        self.last_trigger = "in"
+        try:
+            command = self.brain.decide(
+                self.state,
+                self.memory.prompt_block(self.state),
+                "in",
+            )
+        except Exception as exc:
+            self._note("error", f"llm: {exc}")
+            command = SpeechCommand.wait(reason=f"llm_error:{type(exc).__name__}")
+        self._apply(command)
+        self._llm_busy.clear()
+
+    def _apply(self, command: SpeechCommand) -> None:
+        if command.action in {Action.STOP, Action.INTERRUPT}:
+            command = SpeechCommand.wait(reason="barge_in_ignored_use_stop")
+        self.last_command = command
+        self.state.assistant.current_action = command.action.value.lower()
+        spoken = spoken_text(command) or command.reason
+        clog("proto", f"{command.action.value} {clip(spoken)}")
+        if command.action != Action.WAIT:
+            self._note("protocol", f"{command.action.value} {spoken}".strip())
+
+        if command.action in {Action.WAIT, Action.CONTINUE}:
+            return
+        text = spoken_text(command)
+        if not text:
+            return
+        try:
+            self._speak_q.put_nowait(command)
+            clog("out", f"queued {clip(text)}")
+        except Exception:
+            clog("out", "queue full — keep playing")
 
     def ingest_text(self, text: str) -> None:
         text = (text or "").strip()
@@ -236,14 +270,9 @@ class DuplexRuntime:
         self.state.sta.turn_completion = 0.95
         self.state.sta.turn_state = TurnState.COMPLETE
         self.memory.add("user_final", text, now)
-        clog("text", clip(text))
+        clog("in", f"text {clip(text)}")
         self._note("user_final", text)
-        command = self.brain.decide(
-            self.state,
-            self.memory.prompt_block(self.state.snapshot()),
-            "typed_turn",
-        )
-        self.last_trigger = "typed_turn"
-        self.last_llm = now
         self.last_handled_transcript = text
-        self._apply(command)
+        if not self._llm_busy.is_set():
+            self._llm_busy.set()
+            Thread(target=self._llm_once, daemon=True).start()

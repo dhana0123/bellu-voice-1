@@ -20,7 +20,7 @@ function displayable(text) {
   if (!text) return "";
   const trimmed = String(text).trim();
   if (trimmed.length > 180) return "";
-  if (/TRIGGER:|CURRENT SNAPSHOT|ASR transcript/i.test(trimmed)) return "";
+  if (/TRIGGER:|CURRENT SNAPSHOT|ASR transcript|TURNING POINTS|ACTIVE STATE|System:/i.test(trimmed)) return "";
   const parts = trimmed.split(/\s+/);
   if (parts.length >= 6 && new Set(parts).size <= 2) return "";
   return trimmed;

@@ -70,6 +70,7 @@ class ConversationFacts:
 @dataclass
 class GlobalState:
     time: float = 0.0
+    rms: float = 0.0
     asr: ASRState = field(default_factory=ASRState)
     sta: STAState = field(default_factory=STAState)
     assistant: AssistantRuntime = field(default_factory=AssistantRuntime)
@@ -78,6 +79,11 @@ class GlobalState:
     def snapshot(self) -> dict[str, Any]:
         return {
             "time": round(self.time, 3),
+            "vad": {
+                "speaking": self.sta.user_speaking,
+                "rms": round(self.rms, 4),
+                "pause_ms": self.sta.pause_ms,
+            },
             "user": {
                 "speaking": self.sta.user_speaking,
                 "transcript": self.asr.text,

@@ -11,7 +11,18 @@ _OTHER_INDIC = re.compile(
     r"[\u0900-\u097F\u0980-\u09FF\u0A00-\u0A7F\u0A80-\u0AFF\u0B00-\u0B7F"
     r"\u0B80-\u0BFF\u0D00-\u0D7F\u1C50-\u1C7F]"
 )
-_JUNK_KEYS = ("TRIGGER:", "CURRENT SNAPSHOT", "ASR transcript", "STA:")
+_JUNK_KEYS = (
+    "TRIGGER:",
+    "TRIGGER ",
+    "ACTIVE STATE",
+    "CURRENT SNAPSHOT",
+    "ASR transcript",
+    "TURNING POINTS",
+    "RECENT TRACE",
+    "system_event",
+    "trigger_snapsot",
+    "trigger_snapshot",
+)
 
 
 def collapse_repeats(text: str, keep: int = 2) -> str:

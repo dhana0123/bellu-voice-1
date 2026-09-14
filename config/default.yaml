@@ -36,7 +36,7 @@ llm:
   temperature: 0.3
   repetition_penalty: 1.25
   enable_thinking: false
-  min_decision_interval_ms: 320
+  min_decision_interval_ms: 0
 
 tts:
   model_id: ai4bharat/indic-parler-tts

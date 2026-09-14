@@ -15,8 +15,8 @@ class MockSTA:
             user_speaking=speaking,
             turn_completion=0.2 if speaking else 0.92,
             backchannel_opportunity=0.8 if speaking else 0.1,
-            interruption_probability=0.7 if (assistant_speaking and speaking) else 0.05,
-            overlap=bool(assistant_speaking and speaking),
+            interruption_probability=0.05,
+            overlap=False,
             timestamp=timestamp,
             turn_state=TurnState.INCOMPLETE if speaking else TurnState.COMPLETE,
         )

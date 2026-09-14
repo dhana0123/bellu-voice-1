@@ -132,14 +132,9 @@ class SarvamBrain:
         if self.model is None:
             self.load()
         user = (
-            f"TRIGGER: {trigger}\n\n"
+            "GLOBAL CONTEXT\n"
             f"{memory_block}\n\n"
-            f"CURRENT SNAPSHOT:\n{state.snapshot()}\n\n"
-            "ASR transcript:\n"
-            f"{state.asr.text}\n\n"
-            "STA:\n"
-            f"turn={state.sta.turn_state.value} complete={state.sta.turn_completion} "
-            f"backchannel={state.sta.backchannel_opportunity} irq={state.sta.interruption_probability}"
+            "Decide one speech-protocol JSON. Do not copy GLOBAL CONTEXT into text."
         )
         messages = [
             {"role": "system", "content": CONTROLLER_SYSTEM},

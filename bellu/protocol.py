@@ -57,6 +57,9 @@ class SpeechCommand:
         text = (raw or "").strip()
         if not text:
             return cls.wait("empty llm output")
+        upper = text.upper()
+        if any(key.upper() in upper for key in ("ACTIVE STATE", "TURNING POINTS", "TRIGGER:", "RECENT TRACE")):
+            return cls.wait("llm_dumped_context")
 
         fenced = _FENCE_RE.search(text)
         if fenced:

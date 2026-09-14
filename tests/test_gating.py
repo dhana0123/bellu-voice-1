@@ -1,13 +1,31 @@
+from bellu.gating import needs_llm
 from bellu.language import collapse_repeats, clean_user_text
+from bellu.memory import TemporalMemory
+from bellu.perception.turn_tags import parse_turn
+from bellu.protocol import SpeechCommand
+from bellu.types import ASRState, GlobalState, STAState, TurnState
+
+
+def test_global_context_has_three_layers():
+    mem = TemporalMemory()
+    state = GlobalState()
+    state.rms = 0.04
+    state.asr = ASRState(text="ఓకే", language="te")
+    state.sta = STAState(user_speaking=True, turn_state=TurnState.INCOMPLETE)
+    mem.add("user_partial", "ఓకే")
+    mem.add("assistant_say", "అవును")
+    block = mem.prompt_block(state)
+    assert "CURRENT" in block
+    assert "RECENT" in block
+    assert "HISTORY" in block
+    assert "ఓకే" in block
+    assert "ACTIVE STATE" not in block
 
 
 def test_collapse_ho_ho_loop():
     assert collapse_repeats("हो हो हो हो हो हो") == "हो हो"
     assert clean_user_text("हो हो हो हो हो हो हो") == ""
     assert "నమస్కారం" in clean_user_text("నమస్కారం ఎలా ఉన్నారు")
-from bellu.perception.turn_tags import parse_turn
-from bellu.protocol import SpeechCommand
-from bellu.types import ASRState, GlobalState, STAState, TurnState
 
 
 def test_protocol_invalid_json_does_not_raise():
@@ -64,11 +82,3 @@ def test_easy_turn_tag_parse():
     assert state.value == "COMPLETE"
     assert tag == "<COMPLETE>"
     assert "COMPLETE" not in text
-
-
-def test_loop_does_not_call_llm_every_tick():
-    state = GlobalState()
-    state.time = 0.16
-    state.sta = STAState(user_speaking=True, turn_completion=0.2, backchannel_opportunity=0.2)
-    decision = needs_llm(state, {"min_decision_interval_ms": 320}, last_decision_s=0.0)
-    assert not decision.needed
