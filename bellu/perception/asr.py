@@ -18,6 +18,29 @@ class ASREngine(ABC):
         raise NotImplementedError
 
 
+def _patch_indic_canary_dtype(model_dir: str) -> None:
+    """Newer transformers pass dtype= into model __init__; Indic-Canary rejects it."""
+
+    if model_dir not in sys.path:
+        sys.path.insert(0, model_dir)
+    try:
+        import modeling_indic_canary as mic  # type: ignore
+    except Exception:
+        return
+    cls = getattr(mic, "IndicCanaryForConditionalGeneration", None)
+    if cls is None or getattr(cls, "_bellu_dtype_patched", False):
+        return
+    orig = cls.__init__
+
+    def patched(self, *args, **kwargs):
+        kwargs.pop("dtype", None)
+        kwargs.pop("torch_dtype", None)
+        return orig(self, *args, **kwargs)
+
+    cls.__init__ = patched  # type: ignore[method-assign]
+    cls._bellu_dtype_patched = True
+
+
 class IndicTranscribeASR(ASREngine):
     """Streaming-window wrapper around Indic-Transcribe-core (Bodhan AI / AI4Bharat)."""
 
@@ -39,9 +62,17 @@ class IndicTranscribeASR(ASREngine):
         model_dir = snapshot_download(self.model_id)
         if model_dir not in sys.path:
             sys.path.insert(0, model_dir)
+        _patch_indic_canary_dtype(model_dir)
         from indic_transcribe import IndicTranscribe  # type: ignore
 
-        self._model = IndicTranscribe.from_pretrained(model_dir)
+        try:
+            self._model = IndicTranscribe.from_pretrained(model_dir)
+        except TypeError as exc:
+            if "dtype" not in str(exc):
+                raise
+            _patch_indic_canary_dtype(model_dir)
+            self._model = IndicTranscribe.from_pretrained(model_dir)
+
         if hasattr(self._model, "to") and self.device:
             try:
                 self._model.to(self.device)
