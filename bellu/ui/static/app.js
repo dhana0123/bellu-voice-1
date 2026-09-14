@@ -32,23 +32,48 @@ function setStatus(text, cls) {
 
 function speakFallback(text) {
   if (!text || !window.speechSynthesis) return;
+  if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
   const utter = new SpeechSynthesisUtterance(text);
   utter.rate = 1.0;
+  utter.volume = 1.0;
+  const voices = window.speechSynthesis.getVoices();
+  const hi = voices.find((v) => /hi|india|hindi/i.test(`${v.lang} ${v.name}`));
+  if (hi) utter.voice = hi;
   window.speechSynthesis.cancel();
   window.speechSynthesis.speak(utter);
 }
 
 function playPcm16(arrayBuffer) {
   if (!audioCtx) return;
+  if (audioCtx.state === "suspended") audioCtx.resume();
   const int16 = new Int16Array(arrayBuffer);
   if (!int16.length) return;
+  const srcRate = 16000;
+  const dstRate = audioCtx.sampleRate || srcRate;
   const f32 = new Float32Array(int16.length);
   for (let i = 0; i < int16.length; i += 1) f32[i] = int16[i] / 32768;
-  const buffer = audioCtx.createBuffer(1, f32.length, 16000);
-  buffer.copyToChannel(f32, 0);
+  let samples = f32;
+  if (Math.abs(dstRate - srcRate) > 1) {
+    const n = Math.max(1, Math.round(f32.length * dstRate / srcRate));
+    const out = new Float32Array(n);
+    const scale = (f32.length - 1) / Math.max(n - 1, 1);
+    for (let i = 0; i < n; i += 1) {
+      const x = i * scale;
+      const i0 = Math.floor(x);
+      const i1 = Math.min(i0 + 1, f32.length - 1);
+      const t = x - i0;
+      out[i] = f32[i0] * (1 - t) + f32[i1] * t;
+    }
+    samples = out;
+  }
+  const buffer = audioCtx.createBuffer(1, samples.length, dstRate);
+  buffer.copyToChannel(samples, 0);
   const src = audioCtx.createBufferSource();
+  const gain = audioCtx.createGain();
+  gain.gain.value = 1.0;
   src.buffer = buffer;
-  src.connect(audioCtx.destination);
+  src.connect(gain);
+  gain.connect(audioCtx.destination);
   const now = audioCtx.currentTime;
   if (playTime < now) playTime = now + 0.02;
   src.start(playTime);
@@ -65,10 +90,23 @@ function floatTo16(input) {
 }
 
 async function startMicStream() {
-  audioCtx = new AudioContext();
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  audioCtx = new Ctx();
+  await audioCtx.resume();
+  playTime = audioCtx.currentTime;
+  const blip = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  blip.frequency.value = 660;
+  gain.gain.value = 0.08;
+  blip.connect(gain);
+  gain.connect(audioCtx.destination);
+  blip.start();
+  blip.stop(audioCtx.currentTime + 0.12);
+
   media = await navigator.mediaDevices.getUserMedia({
     audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 },
   });
+  await audioCtx.resume();
   const source = audioCtx.createMediaStreamSource(media);
   processor = audioCtx.createScriptProcessor(4096, 1, 1);
   processor.onaudioprocess = (event) => {
@@ -81,8 +119,11 @@ async function startMicStream() {
     const rms = Math.sqrt(sum / inputData.length);
     meterEl.textContent = `mic · ${(rms * 100).toFixed(1)}`;
   };
+  const mute = audioCtx.createGain();
+  mute.gain.value = 0;
   source.connect(processor);
-  processor.connect(audioCtx.destination);
+  processor.connect(mute);
+  mute.connect(audioCtx.destination);
 }
 
 function stopMicStream() {
@@ -112,9 +153,12 @@ async function connect() {
     addBubble("sys", "Connected — keep talking. The model listens continuously.");
   };
 
-  socket.onmessage = (event) => {
-    if (event.data instanceof ArrayBuffer) {
-      playPcm16(event.data);
+  socket.onmessage = async (event) => {
+    let binary = null;
+    if (event.data instanceof ArrayBuffer) binary = event.data;
+    else if (event.data instanceof Blob) binary = await event.data.arrayBuffer();
+    if (binary) {
+      playPcm16(binary);
       return;
     }
     const data = JSON.parse(event.data);

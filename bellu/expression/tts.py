@@ -6,6 +6,7 @@ from typing import Callable
 import numpy as np
 import torch
 
+from bellu.log import clip, clog
 from bellu.protocol import SpeechCommand, spoken_text
 
 AudioSink = Callable[[np.ndarray, int], None]
@@ -64,8 +65,13 @@ class ParlerExpression:
             self.load()
         self.cancel.clear()
         self.busy.set()
+        clog("tts", f"start {clip(text)}")
         try:
             self._stream(text, description_from_protocol(command, self.cfg.get("speaker", "Laura")), sink)
+            clog("tts", "done")
+        except Exception as exc:
+            clog("tts", f"FAIL {type(exc).__name__}: {exc}")
+            raise
         finally:
             self.busy.clear()
 
@@ -114,8 +120,14 @@ class MockTTS:
         self.cancel.set()
 
     def speak(self, command: SpeechCommand, sink: AudioSink) -> None:
+        from bellu.perception.audio import placeholder_speech
+
         text = spoken_text(command)
         self.last_text = text
         if not text:
             return
-        sink(np.zeros(1600, dtype=np.float32), 16000)
+        self.busy.set()
+        try:
+            sink(placeholder_speech(text, 16000), 16000)
+        finally:
+            self.busy.clear()

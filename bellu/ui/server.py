@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from bellu.log import clip, clog
 from bellu.perception.audio import resample_mono
 from bellu.protocol import spoken_text
 
@@ -33,14 +34,21 @@ def create_app(runtime, mode: str, model_id: str | None = None) -> FastAPI:
     loop_holder: dict[str, Any] = {"loop": None, "ws": None}
 
     def on_tts(audio: np.ndarray, sr: int) -> None:
-        pcm = resample_mono(audio, sr, 16000)
+        pcm = resample_mono(np.asarray(audio, dtype=np.float32).reshape(-1), sr, 16000)
+        peak = float(np.max(np.abs(pcm))) if pcm.size else 0.0
         raw = (np.clip(pcm, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
+        clog("tts", f"audio {len(raw)} bytes peak={peak:.3f} sr={sr}")
+        if pcm.size == 0 or peak < 1e-4:
+            clog("tts", "skip silent chunk")
+            return
         with audio_lock:
             audio_out.append(raw)
         loop = loop_holder.get("loop")
         ws = loop_holder.get("ws")
         if loop and ws:
             asyncio.run_coroutine_threadsafe(_flush_audio(ws, audio_out, audio_lock), loop)
+        else:
+            clog("tts", "no websocket to send audio")
 
     runtime.on_tts = on_tts
     runtime.mode = mode
@@ -66,6 +74,7 @@ def create_app(runtime, mode: str, model_id: str | None = None) -> FastAPI:
     def chat(payload: ChatIn):
         runtime.ingest_text(payload.text)
         cmd = runtime.last_command
+        clog("http", f"text {clip(payload.text)} -> {clip(spoken_text(cmd) if cmd else '')}")
         return {"reply": spoken_text(cmd) if cmd else ""}
 
     @app.websocket("/api/chat")
@@ -75,6 +84,8 @@ def create_app(runtime, mode: str, model_id: str | None = None) -> FastAPI:
         loop_holder["loop"] = asyncio.get_running_loop()
         loop_holder["ws"] = socket
         sr_in = 48000
+        audio_packets = 0
+        clog("ws", "client connected")
         runtime.start(use_microphone=False)
         last_log = 0
         try:
@@ -86,7 +97,9 @@ def create_app(runtime, mode: str, model_id: str | None = None) -> FastAPI:
                     kind = data.get("type")
                     if kind == "hello":
                         sr_in = int(data.get("sr") or 48000)
+                        clog("ws", f"hello sr={sr_in}")
                     elif kind == "chat":
+                        clog("ws", f"chat {clip(data.get('text'))}")
                         await asyncio.to_thread(runtime.ingest_text, data.get("text") or "")
                         cmd = runtime.last_command
                         await socket.send_json(
@@ -97,6 +110,7 @@ def create_app(runtime, mode: str, model_id: str | None = None) -> FastAPI:
                             }
                         )
                     elif kind == "interrupt":
+                        clog("ws", "interrupt")
                         runtime.interrupt()
                         await socket.send_json({"type": "state", **_thin_state(runtime)})
                     elif kind == "ping":
@@ -105,6 +119,9 @@ def create_app(runtime, mode: str, model_id: str | None = None) -> FastAPI:
                     pcm = np.frombuffer(message["bytes"], dtype=np.int16).astype(np.float32) / 32768.0
                     wav = resample_mono(pcm, sr_in, runtime.cfg["sample_rate"])
                     runtime.push_audio(wav)
+                    audio_packets += 1
+                    if audio_packets == 1 or audio_packets % 50 == 0:
+                        clog("ws", f"mic packets={audio_packets} rms={runtime.ring.rms:.4f}")
                     view = runtime.view()
                     log = view.get("log") or []
                     if len(log) > last_log:
@@ -128,7 +145,7 @@ def create_app(runtime, mode: str, model_id: str | None = None) -> FastAPI:
                     )
                     await _flush_audio(socket, audio_out, audio_lock)
         except WebSocketDisconnect:
-            pass
+            clog("ws", "client disconnected")
         finally:
             if loop_holder.get("ws") is socket:
                 loop_holder["ws"] = None

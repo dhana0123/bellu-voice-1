@@ -6,6 +6,7 @@ from time import sleep, time
 from typing import Any, Callable
 
 from bellu.gating import needs_llm
+from bellu.log import clip, clog
 from bellu.memory import TemporalMemory
 from bellu.perception.audio import AudioRing
 from bellu.protocol import SpeechCommand, spoken_text
@@ -42,6 +43,8 @@ class DuplexRuntime:
         self.last_command: SpeechCommand | None = None
         self.last_trigger = ""
         self.last_handled_transcript = ""
+        self._last_asr_log = ""
+        self._last_sta_log = ""
         self.ui_log: deque[dict[str, Any]] = deque(maxlen=80)
         self._mic = None
         self._loop_thread: Thread | None = None
@@ -57,6 +60,7 @@ class DuplexRuntime:
             self._mic.start()
         self._loop_thread = Thread(target=self._loop, daemon=True)
         self._loop_thread.start()
+        clog("loop", f"started mic={'on' if self._mic else 'browser'}")
         self._note("system", "event loop started")
 
     def halt(self) -> None:
@@ -64,6 +68,7 @@ class DuplexRuntime:
         if self._mic is not None:
             self._mic.stop()
             self._mic = None
+        clog("loop", "stopped")
         self._note("system", "event loop stopped")
 
     def join(self) -> None:
@@ -81,6 +86,7 @@ class DuplexRuntime:
         self.tts.cancel_playback()
         self.state.assistant.speaking = False
         self.state.assistant.current_action = "interrupted"
+        clog("loop", "interrupt")
         self._note("system", "interrupt")
 
     def view(self) -> dict[str, Any]:
@@ -96,6 +102,8 @@ class DuplexRuntime:
 
     def _note(self, kind: str, text: str) -> None:
         self.ui_log.append({"t": time(), "kind": kind, "text": text[:240]})
+        if kind == "error":
+            clog("error", text)
 
     def _loop(self) -> None:
         tick = self.cfg["event_loop_ms"] / 1000.0
@@ -111,7 +119,20 @@ class DuplexRuntime:
             if now - self.last_asr >= asr_every:
                 self.last_asr = now
                 audio = self.ring.window(self.cfg["asr"]["window_s"])
-                asr_state = self.asr.transcribe(audio, self.cfg["sample_rate"], now)
+                t0 = time()
+                try:
+                    asr_state = self.asr.transcribe(audio, self.cfg["sample_rate"], now)
+                except Exception as exc:
+                    clog("asr", f"FAIL {type(exc).__name__}: {exc}")
+                    self._note("error", f"asr: {exc}")
+                    sleep(tick)
+                    continue
+                ms = (time() - t0) * 1000
+                shown = clip(asr_state.text) or "(silence)"
+                line = f"{ms:.0f}ms {asr_state.language or '-'} {shown}"
+                if line != self._last_asr_log:
+                    self._last_asr_log = line
+                    clog("asr", line)
                 if asr_state.text:
                     self.state.asr = asr_state
                     kind = "user_final" if asr_state.is_final else "user_partial"
@@ -121,14 +142,27 @@ class DuplexRuntime:
             if now - self.last_sta >= sta_every:
                 self.last_sta = now
                 audio = self.ring.window(self.cfg["sta"]["window_s"])
-                sta_state = self.sta.infer(
-                    audio,
-                    self.cfg["sample_rate"],
-                    now,
-                    assistant_speaking=self.state.assistant.speaking,
-                )
+                try:
+                    sta_state = self.sta.infer(
+                        audio,
+                        self.cfg["sample_rate"],
+                        now,
+                        assistant_speaking=self.state.assistant.speaking,
+                    )
+                except Exception as exc:
+                    clog("sta", f"FAIL {type(exc).__name__}: {exc}")
+                    self._note("error", f"sta: {exc}")
+                    sleep(tick)
+                    continue
                 sta_state.pause_ms = self.ring.pause_ms()
                 self.state.sta = sta_state
+                sta_line = (
+                    f"{sta_state.turn_state.value} complete={sta_state.turn_completion:.2f} "
+                    f"bc={sta_state.backchannel_opportunity:.2f} irq={sta_state.interruption_probability:.2f}"
+                )
+                if sta_line != self._last_sta_log:
+                    self._last_sta_log = sta_line
+                    clog("sta", sta_line)
                 self.memory.add("sta", f"{sta_state.turn_state.value} {sta_state.easy_turn_transcript}", now)
 
             gating = {**self.cfg.get("gating", {}), "min_decision_interval_ms": self.cfg["llm"].get("min_decision_interval_ms", 320)}
@@ -141,6 +175,7 @@ class DuplexRuntime:
                         continue
                 self.last_llm = now
                 self.last_trigger = decision.reason
+                clog("gate", f"{decision.reason} asr={clip(transcript, 80)!r}")
                 if transcript and decision.reason in {"turn_complete", "asr_final", "typed_turn"}:
                     self.last_handled_transcript = transcript
                 try:
@@ -158,7 +193,9 @@ class DuplexRuntime:
     def _apply(self, command: SpeechCommand) -> None:
         self.last_command = command
         self.state.assistant.current_action = command.action.value.lower()
-        self._note("protocol", f"{command.action.value} {spoken_text(command) or command.reason}".strip())
+        spoken = spoken_text(command) or command.reason
+        clog("proto", f"{command.action.value} {clip(spoken)}")
+        self._note("protocol", f"{command.action.value} {spoken}".strip())
         if command.action in {Action.STOP, Action.INTERRUPT}:
             self.tts.cancel_playback()
             self.state.assistant.speaking = False
@@ -179,7 +216,15 @@ class DuplexRuntime:
             if self.on_tts is not None:
                 self.on_tts(audio, sr)
 
-        Thread(target=self.tts.speak, args=(command, sink), daemon=True).start()
+        def _speak() -> None:
+            try:
+                self.tts.speak(command, sink)
+            except Exception as exc:
+                clog("tts", f"FAIL {type(exc).__name__}: {exc}")
+                self._note("error", f"tts: {exc}")
+
+        clog("tts", f"speak {clip(text)}")
+        Thread(target=_speak, daemon=True).start()
 
     def ingest_text(self, text: str) -> None:
         text = (text or "").strip()
@@ -191,6 +236,7 @@ class DuplexRuntime:
         self.state.sta.turn_completion = 0.95
         self.state.sta.turn_state = TurnState.COMPLETE
         self.memory.add("user_final", text, now)
+        clog("text", clip(text))
         self._note("user_final", text)
         command = self.brain.decide(
             self.state,

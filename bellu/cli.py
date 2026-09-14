@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from bellu.config import load_config
+from bellu.log import clog
 from bellu.orchestrator import DuplexRuntime
 
 
@@ -60,8 +61,10 @@ def build_runtime(cfg: dict, mock: bool, for_ui: bool = False) -> DuplexRuntime:
         brain = SarvamBrain(cfg["llm"])
         print("Loading ASR (Indic-Transcribe-core)...")
         asr.load()
+        clog("boot", "ASR ready")
         print(f"Loading LLM ({cfg['llm']['model_id']})...")
         brain.load()
+        clog("boot", f"LLM ready {cfg['llm']['model_id']}")
 
         sta = MockSTA()
         if not for_ui:
@@ -71,8 +74,10 @@ def build_runtime(cfg: dict, mock: bool, for_ui: bool = False) -> DuplexRuntime:
                 print("Loading STA (Easy-Turn)...")
                 sta = EasyTurnSTA(cfg["sta"])
                 sta.load()
+                clog("boot", "STA ready")
             except Exception as exc:
                 print(f"Easy-Turn unavailable ({exc}); using MockSTA")
+                clog("boot", f"STA mock ({exc})")
 
         tts = MockTTS()
         try:
@@ -81,8 +86,10 @@ def build_runtime(cfg: dict, mock: bool, for_ui: bool = False) -> DuplexRuntime:
             print("Loading TTS (ParlerTTS)...")
             tts = ParlerExpression(cfg["tts"])
             tts.load()
+            clog("boot", "TTS ready")
         except Exception as exc:
             print(f"ParlerTTS unavailable ({exc}); text-only voice replies")
+            clog("boot", f"TTS mock ({exc})")
 
     from bellu.io.devices import NullSpeaker
 

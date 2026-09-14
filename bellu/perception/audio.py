@@ -60,6 +60,30 @@ def resample_mono(audio: np.ndarray, src_sr: int, dst_sr: int) -> np.ndarray:
     return np.interp(x_new, x_old, audio).astype(np.float32)
 
 
+def placeholder_speech(text: str, sample_rate: int = 16000) -> np.ndarray:
+    """Audible stand-in when ParlerTTS is missing. Varying tones, not silence."""
+
+    text = (text or "").strip()
+    if not text:
+        return np.zeros(0, dtype=np.float32)
+    n = int(sample_rate * min(2.6, 0.08 * max(len(text), 6)))
+    audio = np.zeros(n, dtype=np.float32)
+    pos = 0
+    hop = int(0.07 * sample_rate)
+    seg = int(0.09 * sample_rate)
+    for ch in text[:28]:
+        end = min(n, pos + seg)
+        sl = end - pos
+        if sl < 16:
+            break
+        freq = 240.0 + (ord(ch) % 28) * 16.0
+        tt = np.arange(sl, dtype=np.float32) / float(sample_rate)
+        env = np.hanning(sl).astype(np.float32)
+        audio[pos:end] += 0.22 * env * np.sin(2.0 * np.pi * freq * tt)
+        pos += hop
+    return np.clip(audio, -0.45, 0.45).astype(np.float32)
+
+
 def speech_rate(audio: np.ndarray, sample_rate: int) -> float:
     if audio.size < sample_rate // 4:
         return 1.0

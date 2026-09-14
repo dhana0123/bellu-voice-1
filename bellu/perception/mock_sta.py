@@ -36,9 +36,14 @@ class MockTTS:
         self.cancel.set()
 
     def speak(self, command: SpeechCommand, sink) -> None:
+        from bellu.perception.audio import placeholder_speech
+
         text = spoken_text(command)
         self.last_text = text
         if not text:
             return
-        # Tiny silence placeholder — browser uses text + speechSynthesis when no real TTS audio.
-        sink(np.zeros(800, dtype=np.float32), 16000)
+        self.busy.set()
+        try:
+            sink(placeholder_speech(text, 16000), 16000)
+        finally:
+            self.busy.clear()

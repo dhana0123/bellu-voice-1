@@ -6,6 +6,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 
 from bellu.brain.prompts import CONTROLLER_SYSTEM
+from bellu.log import clip, clog
 from bellu.protocol import SpeechCommand
 from bellu.types import GlobalState
 
@@ -120,7 +121,9 @@ class SarvamBrain:
                 attention_mask=inputs.get("attention_mask"),
                 generation_config=gen,
             )
-        return self.tokenizer.decode(out[0][inputs["input_ids"].shape[-1] :], skip_special_tokens=True).strip()
+        text = self.tokenizer.decode(out[0][inputs["input_ids"].shape[-1] :], skip_special_tokens=True).strip()
+        clog("llm", clip(text, 220) or "(empty)")
+        return text
 
     def decide(self, state: GlobalState, memory_block: str, trigger: str) -> SpeechCommand:
         if self.model is None:
@@ -144,7 +147,11 @@ class SarvamBrain:
             messages,
             enable_thinking=bool(self.cfg.get("enable_thinking", False)),
         )
-        return SpeechCommand.from_llm_text(self._generate(prompt, float(self.cfg.get("temperature", 0.4))))
+        clog("llm", f"decide trigger={trigger} asr={clip(state.asr.text, 80)!r}")
+        raw = self._generate(prompt, float(self.cfg.get("temperature", 0.4)))
+        cmd = SpeechCommand.from_llm_text(raw)
+        clog("llm", f"parsed {cmd.action.value} reason={clip(cmd.reason, 80)}")
+        return cmd
 
     def chat(self, user_text: str, history: list[dict] | None = None) -> str:
         if self.model is None:
