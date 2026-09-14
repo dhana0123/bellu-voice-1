@@ -18,27 +18,61 @@ class ASREngine(ABC):
         raise NotImplementedError
 
 
-def _patch_indic_canary_dtype(model_dir: str) -> None:
-    """Newer transformers pass dtype= into model __init__; Indic-Canary rejects it."""
+def _patch_generation_config() -> None:
+    from transformers.generation.configuration_utils import GenerationConfig
 
-    if model_dir not in sys.path:
-        sys.path.insert(0, model_dir)
-    try:
-        import modeling_indic_canary as mic  # type: ignore
-    except Exception:
+    if getattr(GenerationConfig, "_bellu_patched", False):
         return
-    cls = getattr(mic, "IndicCanaryForConditionalGeneration", None)
-    if cls is None or getattr(cls, "_bellu_dtype_patched", False):
-        return
-    orig = cls.__init__
 
-    def patched(self, *args, **kwargs):
+    orig_fp = GenerationConfig.from_pretrained.__func__
+
+    @classmethod
+    def from_pretrained(cls, *args, **kwargs):
         kwargs.pop("dtype", None)
         kwargs.pop("torch_dtype", None)
-        return orig(self, *args, **kwargs)
+        return orig_fp(cls, *args, **kwargs)
 
-    cls.__init__ = patched  # type: ignore[method-assign]
-    cls._bellu_dtype_patched = True
+    orig_to_dict = GenerationConfig.to_dict
+
+    def to_dict(self, *args, **kwargs):
+        data = orig_to_dict(self, *args, **kwargs)
+        for key, value in list(data.items()):
+            # torch.dtype is not JSON-serializable; logging GenerationConfig needs strings.
+            if type(value).__name__ == "dtype":
+                data[key] = str(value)
+        return data
+
+    GenerationConfig.from_pretrained = from_pretrained
+    GenerationConfig.to_dict = to_dict
+    GenerationConfig._bellu_patched = True
+
+
+def _patch_indic_canary(model_dir: str) -> None:
+    if model_dir not in sys.path:
+        sys.path.insert(0, model_dir)
+    import modeling_indic_canary as mic  # type: ignore
+
+    cls = mic.IndicCanaryForConditionalGeneration
+    if getattr(cls, "_bellu_patched", False):
+        return
+
+    orig_init = cls.__init__
+    orig_fp = cls.from_pretrained.__func__
+
+    def init(self, *args, **kwargs):
+        kwargs.pop("dtype", None)
+        kwargs.pop("torch_dtype", None)
+        return orig_init(self, *args, **kwargs)
+
+    @classmethod
+    def from_pretrained(cls, *args, **kwargs):
+        kwargs.pop("dtype", None)
+        kwargs.pop("torch_dtype", None)
+        return orig_fp(cls, *args, **kwargs)
+
+    cls.__init__ = init  # type: ignore[method-assign]
+    cls.from_pretrained = from_pretrained
+    cls._bellu_patched = True
 
 
 class IndicTranscribeASR(ASREngine):
@@ -62,22 +96,26 @@ class IndicTranscribeASR(ASREngine):
         model_dir = snapshot_download(self.model_id)
         if model_dir not in sys.path:
             sys.path.insert(0, model_dir)
-        _patch_indic_canary_dtype(model_dir)
+
+        _patch_generation_config()
+        _patch_indic_canary(model_dir)
+
         from indic_transcribe import IndicTranscribe  # type: ignore
 
-        try:
-            self._model = IndicTranscribe.from_pretrained(model_dir)
-        except TypeError as exc:
-            if "dtype" not in str(exc):
-                raise
-            _patch_indic_canary_dtype(model_dir)
-            self._model = IndicTranscribe.from_pretrained(model_dir)
+        self._model = IndicTranscribe.from_pretrained(model_dir)
 
-        if hasattr(self._model, "to") and self.device:
-            try:
-                self._model.to(self.device)
-            except Exception:
-                pass
+        target = self.device or "cpu"
+        try:
+            import torch
+
+            model = getattr(self._model, "model", self._model)
+            model.to(target)
+            if str(target).startswith("cuda") and torch.cuda.is_available():
+                model.to(dtype=torch.bfloat16)
+            if hasattr(self._model, "device"):
+                self._model.device = target
+        except Exception:
+            pass
 
     def transcribe(self, audio: np.ndarray, sample_rate: int, timestamp: float) -> ASRState:
         if self._model is None:
