@@ -9,9 +9,19 @@ from bellu.brain.prompts import CONTROLLER_SYSTEM
 from bellu.protocol import SpeechCommand
 from bellu.types import GlobalState
 
+SYSTEM_CHAT = (
+    "You are Bellu, a natural conversational assistant for India. "
+    "Reply in the user's language. Be concise and spoken-friendly."
+)
 
-def _ensure_sarvam_transformers() -> None:
-    """Sarvam remote code imports ALL_ATTENTION_FUNCTIONS from modeling_utils (transformers 4.51–4.57)."""
+
+def _needs_moe_compat(model_id: str) -> bool:
+    mid = model_id.lower()
+    return "sarvam-30b" in mid or "sarvam-105b" in mid
+
+
+def _ensure_sarvam_moe_transformers() -> None:
+    """Sarvam MoE remote code needs ALL_ATTENTION_FUNCTIONS (transformers 4.51–4.57)."""
 
     import transformers.modeling_utils as modeling_utils
 
@@ -32,13 +42,42 @@ def _ensure_sarvam_transformers() -> None:
             modeling_utils.ALL_ATTENTION_FUNCTIONS = obj
             return
     raise ImportError(
-        "Sarvam-30B needs transformers 4.51–4.57 (not 4.44 and not 5.x). "
+        "This Sarvam MoE model needs transformers 4.51–4.57. "
         "Run: pip install 'transformers>=4.51.3,<5'"
     )
 
 
+def _format_prompt(tokenizer, messages: list[dict], enable_thinking: bool = False) -> str:
+    kwargs: dict[str, Any] = {
+        "tokenize": False,
+        "add_generation_prompt": True,
+    }
+    try:
+        return tokenizer.apply_chat_template(messages, enable_thinking=enable_thinking, **kwargs)
+    except TypeError:
+        try:
+            return tokenizer.apply_chat_template(messages, **kwargs)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    parts: list[str] = []
+    for turn in messages:
+        role = turn.get("role", "user")
+        content = turn.get("content", "")
+        if role == "system":
+            parts.append(f"### System:\n{content}\n")
+        elif role == "assistant":
+            parts.append(f"### Assistant:\n{content}\n")
+        else:
+            parts.append(f"### User:\n{content}\n")
+    parts.append("### Assistant:\n")
+    return "\n".join(parts)
+
+
 class SarvamBrain:
-    """Sarvam-30B as the duplex controller. Outputs Speech Protocol JSON, not acoustics."""
+    """Sarvam LLM brain (OpenHathi-7B by default). Emits speech-protocol or chat text."""
 
     def __init__(self, cfg: dict[str, Any]) -> None:
         self.cfg = cfg
@@ -46,9 +85,12 @@ class SarvamBrain:
         self.model = None
 
     def load(self) -> None:
-        _ensure_sarvam_transformers()
         name = self.cfg["model_id"]
+        if _needs_moe_compat(name):
+            _ensure_sarvam_moe_transformers()
         self.tokenizer = AutoTokenizer.from_pretrained(name, trust_remote_code=True)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
         kwargs: dict[str, Any] = {
             "trust_remote_code": True,
             "torch_dtype": torch.bfloat16,
@@ -59,6 +101,26 @@ class SarvamBrain:
         self.model = AutoModelForCausalLM.from_pretrained(name, **kwargs)
         if device not in {"auto", None} and device != "auto":
             self.model.to(device)
+
+    def _generate(self, prompt: str, temperature: float) -> str:
+        inputs = self.tokenizer(prompt, return_tensors="pt")
+        device = next(self.model.parameters()).device
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        gen = GenerationConfig(
+            max_new_tokens=int(self.cfg.get("max_new_tokens", 256)),
+            temperature=temperature,
+            top_p=0.9,
+            do_sample=True,
+            pad_token_id=self.tokenizer.pad_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
+        )
+        with torch.no_grad():
+            out = self.model.generate(
+                input_ids=inputs["input_ids"],
+                attention_mask=inputs.get("attention_mask"),
+                generation_config=gen,
+            )
+        return self.tokenizer.decode(out[0][inputs["input_ids"].shape[-1] :], skip_special_tokens=True).strip()
 
     def decide(self, state: GlobalState, memory_block: str, trigger: str) -> SpeechCommand:
         if self.model is None:
@@ -77,64 +139,19 @@ class SarvamBrain:
             {"role": "system", "content": CONTROLLER_SYSTEM},
             {"role": "user", "content": user},
         ]
-        prompt = self.tokenizer.apply_chat_template(
+        prompt = _format_prompt(
+            self.tokenizer,
             messages,
-            tokenize=False,
-            add_generation_prompt=True,
             enable_thinking=bool(self.cfg.get("enable_thinking", False)),
         )
-        inputs = self.tokenizer(prompt, return_tensors="pt")
-        device = next(self.model.parameters()).device
-        inputs = {k: v.to(device) for k, v in inputs.items()}
-        gen = GenerationConfig(
-            max_new_tokens=int(self.cfg.get("max_new_tokens", 256)),
-            temperature=float(self.cfg.get("temperature", 0.4)),
-            top_p=0.9,
-            do_sample=True,
-        )
-        with torch.no_grad():
-            out = self.model.generate(
-                input_ids=inputs["input_ids"],
-                attention_mask=inputs.get("attention_mask"),
-                generation_config=gen,
-            )
-        text = self.tokenizer.decode(out[0][inputs["input_ids"].shape[-1] :], skip_special_tokens=True)
-        return SpeechCommand.from_llm_text(text)
+        return SpeechCommand.from_llm_text(self._generate(prompt, float(self.cfg.get("temperature", 0.4))))
 
     def chat(self, user_text: str, history: list[dict] | None = None) -> str:
         if self.model is None:
             self.load()
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are Bellu, a natural conversational assistant for India. "
-                    "Reply in the user's language. Be concise and spoken-friendly."
-                ),
-            }
-        ]
+        messages = [{"role": "system", "content": SYSTEM_CHAT}]
         for turn in (history or [])[-16:]:
             messages.append(turn)
         messages.append({"role": "user", "content": user_text})
-        prompt = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-            enable_thinking=False,
-        )
-        inputs = self.tokenizer(prompt, return_tensors="pt")
-        device = next(self.model.parameters()).device
-        inputs = {k: v.to(device) for k, v in inputs.items()}
-        gen = GenerationConfig(
-            max_new_tokens=int(self.cfg.get("max_new_tokens", 256)),
-            temperature=float(self.cfg.get("temperature", 0.6)),
-            top_p=0.9,
-            do_sample=True,
-        )
-        with torch.no_grad():
-            out = self.model.generate(
-                input_ids=inputs["input_ids"],
-                attention_mask=inputs.get("attention_mask"),
-                generation_config=gen,
-            )
-        return self.tokenizer.decode(out[0][inputs["input_ids"].shape[-1] :], skip_special_tokens=True).strip()
+        prompt = _format_prompt(self.tokenizer, messages, enable_thinking=False)
+        return self._generate(prompt, float(self.cfg.get("temperature", 0.6)))

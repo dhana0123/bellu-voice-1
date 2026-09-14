@@ -24,7 +24,7 @@ sta:
   prompt: "Please transcribe the audio, then append exactly one turn tag: <COMPLETE>, <INCOMPLETE>, <BACKCHANNEL>, or <WAIT>."
 
 llm:
-  model_id: sarvamai/sarvam-30b
+  model_id: sarvamai/OpenHathi-7B-Hi-v0.1-Base
   device: auto
   max_new_tokens: 256
   temperature: 0.4

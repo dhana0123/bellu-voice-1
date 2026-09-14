@@ -17,7 +17,7 @@ MIC → ASR (what) + STA (what is happening)
 | --- | --- | --- |
 | ASR | What did they say? | [Indic-Transcribe-core](https://huggingface.co/bodhan-ai/indic-transcribe-core) (25 Indian languages, gated HF repo) |
 | STA | Turn / overlap / backchannel | [Easy-Turn](https://huggingface.co/ASLP-lab/Easy-Turn) (`COMPLETE`, `INCOMPLETE`, `BACKCHANNEL`, `WAIT`) |
-| LLM | What should happen? | [Sarvam-30B](https://huggingface.co/sarvamai/sarvam-30b) |
+| LLM | What should happen? | [OpenHathi-7B](https://huggingface.co/sarvamai/OpenHathi-7B-Hi-v0.1-Base) (Sarvam 7B) |
 | TTS | How should it sound? | [ParlerTTS Mini v1](https://huggingface.co/parler-tts/parler-tts-mini-v1) (streaming) |
 
 The LLM never sets F0, MFCCs, or spectral tilt. It emits a speech-protocol command. TTS turns that into acoustics.
@@ -26,7 +26,7 @@ The 80 ms loop always refreshes state. Sarvam is **not** called every tick.
 
 ## Setup
 
-Python 3.10+, CUDA GPU strongly recommended. Sarvam-30B + Easy-Turn + ASR + TTS will not fit a small GPU together; use multiple devices via `config/default.yaml` if needed.
+Python 3.10+, CUDA GPU strongly recommended. Change `llm.model_id` in `config/default.yaml` if you want another Sarvam checkpoint.
 
 ```bash
 cd Bellu-Voice-1
@@ -56,7 +56,7 @@ python -m bellu.cli setup-sta
 
 ```bash
 python -m bellu.cli serve --mock          # http://127.0.0.1:8998
-python -m bellu.cli serve                 # live Sarvam-30B + Indic ASR
+python -m bellu.cli serve                 # live OpenHathi-7B + Indic ASR
 ```
 
 Type in the box, or hold **mic** to talk. Replies come from the backend model.

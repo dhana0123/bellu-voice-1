@@ -44,7 +44,8 @@ async function ping() {
   try {
     const res = await fetch("/api/health");
     const data = await res.json();
-    statusEl.textContent = data.mode === "live" ? "connected · sarvam-30b" : "connected · mock";
+    const model = (data.model || "live").split("/").pop();
+    statusEl.textContent = data.mode === "live" ? `connected · ${model}` : "connected · mock";
     statusEl.className = "status ok";
   } catch {
     statusEl.textContent = "offline";

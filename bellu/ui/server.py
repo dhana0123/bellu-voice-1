@@ -20,10 +20,11 @@ class ChatIn(BaseModel):
     text: str
 
 
-def create_app(session: ChatSession, mode: str) -> FastAPI:
+def create_app(session: ChatSession, mode: str, model_id: str | None = None) -> FastAPI:
     app = FastAPI(title="Bellu")
     clients: set[WebSocket] = set()
     loop_holder: dict[str, Any] = {}
+    live_model = model_id or "sarvamai/OpenHathi-7B-Hi-v0.1-Base"
 
     if STATIC.exists():
         app.mount("/static", StaticFiles(directory=STATIC), name="static")
@@ -34,7 +35,7 @@ def create_app(session: ChatSession, mode: str) -> FastAPI:
 
     @app.get("/api/health")
     def health():
-        return {"ok": True, "mode": mode, "model": "sarvamai/sarvam-30b" if mode == "live" else "mock"}
+        return {"ok": True, "mode": mode, "model": live_model if mode == "live" else "mock"}
 
     @app.post("/api/chat")
     def chat(payload: ChatIn):

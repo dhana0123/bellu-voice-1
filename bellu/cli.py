@@ -65,7 +65,7 @@ def build_runtime(cfg: dict, mock: bool) -> DuplexRuntime:
         asr.load()
         print("Loading STA (Easy-Turn)...")
         sta.load()
-        print("Loading LLM (Sarvam-30B)...")
+        print(f"Loading LLM ({cfg['llm']['model_id']})...")
         brain.load()
         print("Loading TTS (ParlerTTS)...")
         tts.load()
@@ -87,7 +87,7 @@ def build_chat(cfg: dict, mock: bool) -> ChatSession:
 
     brain = SarvamBrain(cfg["llm"])
     asr = IndicTranscribeASR(cfg["asr"]["model_id"], cfg["asr"].get("language"), cfg["asr"].get("device", "cuda"))
-    print("Loading LLM (Sarvam-30B)...")
+    print(f"Loading LLM ({cfg['llm']['model_id']})...")
     brain.load()
     print("Loading ASR (Indic-Transcribe-core)...")
     asr.load()
@@ -100,7 +100,11 @@ def serve(cfg: dict, mock: bool, host: str, port: int) -> None:
     from bellu.ui.server import create_app
 
     session = build_chat(cfg, mock=mock)
-    app = create_app(session, mode="mock" if mock else "live")
+    app = create_app(
+        session,
+        mode="mock" if mock else "live",
+        model_id=cfg.get("llm", {}).get("model_id"),
+    )
     print(f"Chat UI: http://127.0.0.1:{port}")
     uvicorn.run(app, host=host, port=port, log_level="info")
 
