@@ -2,9 +2,22 @@ const logEl = document.getElementById("log");
 const form = document.getElementById("composer");
 const input = document.getElementById("input");
 const statusEl = document.getElementById("status");
-const micBtn = document.getElementById("mic");
+const connectBtn = document.getElementById("connect");
+const interruptBtn = document.getElementById("interrupt");
+const meterEl = document.getElementById("meter");
+const turnEl = document.getElementById("turn");
+
+let socket = null;
+let audioCtx = null;
+let media = null;
+let processor = null;
+let playTime = 0;
+let lastUserText = "";
+let lastBotText = "";
+let connected = false;
 
 function addBubble(role, text) {
+  if (!text) return;
   const el = document.createElement("div");
   el.className = `bubble ${role}`;
   el.textContent = text;
@@ -12,119 +25,179 @@ function addBubble(role, text) {
   logEl.scrollTop = logEl.scrollHeight;
 }
 
-async function sendText(text) {
-  const trimmed = text.trim();
-  if (!trimmed) return;
-  addBubble("user", trimmed);
-  input.value = "";
-  statusEl.textContent = "thinking";
-  try {
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: trimmed }),
-    });
-    const data = await res.json();
-    addBubble("bot", data.reply || "(empty reply)");
-    statusEl.textContent = "connected";
-    statusEl.className = "status ok";
-  } catch (err) {
-    addBubble("bot", "Could not reach the model.");
-    statusEl.textContent = "offline";
-    statusEl.className = "status bad";
-  }
+function setStatus(text, cls) {
+  statusEl.textContent = text;
+  statusEl.className = `status ${cls || ""}`;
 }
 
-form.addEventListener("submit", (event) => {
-  event.preventDefault();
-  sendText(input.value);
-});
-
-async function ping() {
-  try {
-    const res = await fetch("/api/health");
-    const data = await res.json();
-    const model = (data.model || "live").split("/").pop();
-    statusEl.textContent = data.mode === "live" ? `connected · ${model}` : "connected · mock";
-    statusEl.className = "status ok";
-  } catch {
-    statusEl.textContent = "offline";
-    statusEl.className = "status bad";
-  }
+function speakFallback(text) {
+  if (!text || !window.speechSynthesis) return;
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.rate = 1.0;
+  window.speechSynthesis.cancel();
+  window.speechSynthesis.speak(utter);
 }
 
-let recording = false;
-let media = null;
-let processor = null;
-let chunks = [];
-let ctx = null;
-
-async function startMic() {
-  ctx = new AudioContext();
-  media = await navigator.mediaDevices.getUserMedia({ audio: true });
-  const source = ctx.createMediaStreamSource(media);
-  processor = ctx.createScriptProcessor(4096, 1, 1);
-  chunks = [];
-  processor.onaudioprocess = (event) => {
-    chunks.push(new Float32Array(event.inputBuffer.getChannelData(0)));
-  };
-  source.connect(processor);
-  processor.connect(ctx.destination);
-  recording = true;
-  micBtn.classList.add("on");
-  statusEl.textContent = "listening";
+function playPcm16(arrayBuffer) {
+  if (!audioCtx) return;
+  const int16 = new Int16Array(arrayBuffer);
+  if (!int16.length) return;
+  const f32 = new Float32Array(int16.length);
+  for (let i = 0; i < int16.length; i += 1) f32[i] = int16[i] / 32768;
+  const buffer = audioCtx.createBuffer(1, f32.length, 16000);
+  buffer.copyToChannel(f32, 0);
+  const src = audioCtx.createBufferSource();
+  src.buffer = buffer;
+  src.connect(audioCtx.destination);
+  const now = audioCtx.currentTime;
+  if (playTime < now) playTime = now + 0.02;
+  src.start(playTime);
+  playTime += buffer.duration;
 }
 
-function mergeChunks() {
-  const length = chunks.reduce((n, c) => n + c.length, 0);
-  const out = new Float32Array(length);
-  let offset = 0;
-  for (const c of chunks) {
-    out.set(c, offset);
-    offset += c.length;
+function floatTo16(input) {
+  const out = new Int16Array(input.length);
+  for (let i = 0; i < input.length; i += 1) {
+    const s = Math.max(-1, Math.min(1, input[i]));
+    out[i] = s < 0 ? s * 32768 : s * 32767;
   }
   return out;
 }
 
-async function stopMic() {
-  recording = false;
-  micBtn.classList.remove("on");
-  if (processor) processor.disconnect();
-  if (media) media.getTracks().forEach((t) => t.stop());
-  if (!chunks.length) return;
-  const samples = mergeChunks();
-  const sr = ctx ? ctx.sampleRate : 48000;
-  const pcm = new Int16Array(samples.length);
-  for (let i = 0; i < samples.length; i += 1) {
-    const s = Math.max(-1, Math.min(1, samples[i]));
-    pcm[i] = s < 0 ? s * 32768 : s * 32767;
-  }
-  statusEl.textContent = "transcribing";
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  const socket = new WebSocket(`${proto}://${location.host}/ws`);
-  socket.binaryType = "arraybuffer";
-  socket.onmessage = (event) => {
-    const data = JSON.parse(event.data);
-    if (data.type === "transcript" && data.text) addBubble("user", data.text);
-    if (data.type === "reply" && data.text) {
-      addBubble("bot", data.text);
-      statusEl.textContent = "connected";
-      statusEl.className = "status ok";
-    }
-  };
-  socket.onopen = () => {
-    socket.send(JSON.stringify({ type: "hello", sr }));
+async function startMicStream() {
+  audioCtx = new AudioContext();
+  media = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 },
+  });
+  const source = audioCtx.createMediaStreamSource(media);
+  processor = audioCtx.createScriptProcessor(4096, 1, 1);
+  processor.onaudioprocess = (event) => {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    const inputData = event.inputBuffer.getChannelData(0);
+    const pcm = floatTo16(inputData);
     socket.send(pcm.buffer);
+    let sum = 0;
+    for (let i = 0; i < inputData.length; i += 1) sum += inputData[i] * inputData[i];
+    const rms = Math.sqrt(sum / inputData.length);
+    meterEl.textContent = `mic · ${(rms * 100).toFixed(1)}`;
   };
+  source.connect(processor);
+  processor.connect(audioCtx.destination);
 }
 
-micBtn.addEventListener("mousedown", () => startMic().catch(() => {
-  statusEl.textContent = "mic blocked";
-  statusEl.className = "status bad";
-}));
-micBtn.addEventListener("mouseup", () => { if (recording) stopMic(); });
-micBtn.addEventListener("touchstart", (e) => { e.preventDefault(); startMic(); });
-micBtn.addEventListener("touchend", (e) => { e.preventDefault(); if (recording) stopMic(); });
+function stopMicStream() {
+  if (processor) processor.disconnect();
+  if (media) media.getTracks().forEach((t) => t.stop());
+  processor = null;
+  media = null;
+}
 
-ping();
-addBubble("bot", "Say something, or type a message.");
+async function connect() {
+  if (connected) {
+    disconnect();
+    return;
+  }
+  setStatus("connecting", "live");
+  await startMicStream();
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  socket = new WebSocket(`${proto}://${location.host}/api/chat`);
+  socket.binaryType = "arraybuffer";
+
+  socket.onopen = () => {
+    connected = true;
+    connectBtn.classList.add("on");
+    connectBtn.textContent = "Live";
+    setStatus("live duplex", "ok");
+    socket.send(JSON.stringify({ type: "hello", sr: audioCtx.sampleRate }));
+    addBubble("sys", "Connected — keep talking. The model listens continuously.");
+  };
+
+  socket.onmessage = (event) => {
+    if (event.data instanceof ArrayBuffer) {
+      playPcm16(event.data);
+      return;
+    }
+    const data = JSON.parse(event.data);
+    if (data.type === "state") {
+      if (data.transcript && data.transcript !== lastUserText) {
+        lastUserText = data.transcript;
+        addBubble("user", data.transcript);
+      }
+      if (data.last_text && data.last_text !== lastBotText) {
+        lastBotText = data.last_text;
+        addBubble("bot", data.last_text);
+        speakFallback(data.last_text);
+      }
+      turnEl.textContent = `turn · ${data.turn || "—"} · ${data.assistant || "waiting"}`;
+      if (typeof data.rms === "number") meterEl.textContent = `mic · ${(data.rms * 100).toFixed(1)}`;
+    } else if (data.type === "reply" && data.text) {
+      addBubble("bot", data.text);
+      speakFallback(data.text);
+    } else if (data.type === "log" && data.kind === "protocol") {
+      // already covered by last_text usually
+    } else if (data.type === "hello") {
+      setStatus(`live · ${(data.model || "").split("/").pop()}`, "ok");
+    }
+  };
+
+  socket.onclose = () => disconnect(false);
+  socket.onerror = () => setStatus("socket error", "bad");
+}
+
+function disconnect(closeSocket = true) {
+  connected = false;
+  connectBtn.classList.remove("on");
+  connectBtn.textContent = "Connect";
+  stopMicStream();
+  if (closeSocket && socket) socket.close();
+  socket = null;
+  setStatus("offline", "bad");
+  meterEl.textContent = "mic · idle";
+}
+
+form.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const text = input.value.trim();
+  if (!text) return;
+  addBubble("user", text);
+  input.value = "";
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: "chat", text }));
+  } else {
+    fetch("/api/text", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        addBubble("bot", data.reply || "");
+        speakFallback(data.reply || "");
+      });
+  }
+});
+
+interruptBtn.addEventListener("click", () => {
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: "interrupt" }));
+  }
+  if (window.speechSynthesis) window.speechSynthesis.cancel();
+});
+
+connectBtn.addEventListener("click", () => {
+  connect().catch((err) => {
+    console.error(err);
+    setStatus("mic blocked", "bad");
+    disconnect();
+  });
+});
+
+fetch("/api/health")
+  .then((r) => r.json())
+  .then((data) => {
+    const model = (data.model || "live").split("/").pop();
+    setStatus(data.mode === "live" ? `ready · ${model}` : "ready · mock", "ok");
+  })
+  .catch(() => setStatus("offline", "bad"));
+
+addBubble("sys", "Click Connect, allow the mic, then speak continuously.");

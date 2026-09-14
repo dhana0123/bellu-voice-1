@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Bellu</title>
+  <title>Bellu Duplex</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
@@ -11,15 +11,23 @@
     <header class="top">
       <div>
         <p class="mark">Bellu</p>
-        <p class="sub">Talk to the model</p>
+        <p class="sub">Continuous full-duplex</p>
       </div>
-      <p id="status" class="status">connecting</p>
+      <p id="status" class="status">offline</p>
     </header>
+
+    <section class="stage">
+      <button type="button" id="connect" class="connect">Connect</button>
+      <p id="meter" class="meter">mic · idle</p>
+      <p id="turn" class="turn">turn · —</p>
+    </section>
+
     <section id="log" class="log" aria-live="polite"></section>
+
     <form id="composer" class="composer">
-      <button type="button" id="mic" class="mic" aria-label="Hold to talk">mic</button>
-      <input id="input" type="text" autocomplete="off" placeholder="Type a message…" />
+      <input id="input" type="text" autocomplete="off" placeholder="Type if you need…" />
       <button type="submit" class="send">Send</button>
+      <button type="button" id="interrupt" class="mic">Stop</button>
     </form>
   </main>
   <script src="/static/app.js"></script>

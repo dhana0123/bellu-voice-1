@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from bellu.chat import ChatSession
 from bellu.config import load_config
 from bellu.orchestrator import DuplexRuntime
 
@@ -43,55 +42,55 @@ def setup_sta(cfg: dict) -> None:
     print(f"  qwen: {qwen}")
 
 
-def build_runtime(cfg: dict, mock: bool) -> DuplexRuntime:
+def build_runtime(cfg: dict, mock: bool, for_ui: bool = False) -> DuplexRuntime:
+    """Build duplex stack. UI mode uses browser mic/speaker (NullSpeaker, no local Microphone)."""
+
     if mock:
         from bellu.brain.mock import MockBrain
-        from bellu.expression.tts import MockTTS
-        from bellu.perception.asr import MockASR
-        from bellu.perception.sta import MockSTA
+        from bellu.perception.mock_asr import MockASR
+        from bellu.perception.mock_sta import MockSTA, MockTTS
 
         asr, sta, brain, tts = MockASR(), MockSTA(), MockBrain(), MockTTS()
     else:
         from bellu.brain.llm import SarvamBrain
-        from bellu.expression.tts import ParlerExpression
         from bellu.perception.asr import IndicTranscribeASR
-        from bellu.perception.sta import EasyTurnSTA
+        from bellu.perception.mock_sta import MockSTA, MockTTS
 
         asr = IndicTranscribeASR(cfg["asr"]["model_id"], cfg["asr"].get("language"), cfg["asr"].get("device", "cuda"))
-        sta = EasyTurnSTA(cfg["sta"])
         brain = SarvamBrain(cfg["llm"])
-        tts = ParlerExpression(cfg["tts"])
         print("Loading ASR (Indic-Transcribe-core)...")
         asr.load()
-        print("Loading STA (Easy-Turn)...")
-        sta.load()
         print(f"Loading LLM ({cfg['llm']['model_id']})...")
         brain.load()
-        print("Loading TTS (ParlerTTS)...")
-        tts.load()
 
-    from bellu.io.devices import Microphone, Speaker
+        sta = MockSTA()
+        if not for_ui:
+            try:
+                from bellu.perception.sta import EasyTurnSTA
 
+                print("Loading STA (Easy-Turn)...")
+                sta = EasyTurnSTA(cfg["sta"])
+                sta.load()
+            except Exception as exc:
+                print(f"Easy-Turn unavailable ({exc}); using MockSTA")
+
+        tts = MockTTS()
+        try:
+            from bellu.expression.tts import ParlerExpression
+
+            print("Loading TTS (ParlerTTS)...")
+            tts = ParlerExpression(cfg["tts"])
+            tts.load()
+        except Exception as exc:
+            print(f"ParlerTTS unavailable ({exc}); text-only voice replies")
+
+    from bellu.io.devices import Microphone, NullSpeaker, Speaker
+
+    if for_ui:
+        speaker = NullSpeaker(cfg["playback"]["output_sample_rate"])
+        return DuplexRuntime(cfg, asr, sta, brain, tts, speaker, None)
     speaker = Speaker(cfg["playback"]["output_sample_rate"])
     return DuplexRuntime(cfg, asr, sta, brain, tts, speaker, Microphone)
-
-
-def build_chat(cfg: dict, mock: bool) -> ChatSession:
-    if mock:
-        from bellu.brain.mock import MockBrain
-        from bellu.perception.mock_asr import MockASR
-
-        return ChatSession(brain=MockBrain(), asr=MockASR())
-    from bellu.brain.llm import SarvamBrain
-    from bellu.perception.asr import IndicTranscribeASR
-
-    brain = SarvamBrain(cfg["llm"])
-    asr = IndicTranscribeASR(cfg["asr"]["model_id"], cfg["asr"].get("language"), cfg["asr"].get("device", "cuda"))
-    print(f"Loading LLM ({cfg['llm']['model_id']})...")
-    brain.load()
-    print("Loading ASR (Indic-Transcribe-core)...")
-    asr.load()
-    return ChatSession(brain=brain, asr=asr)
 
 
 def serve(cfg: dict, mock: bool, host: str, port: int) -> None:
@@ -99,14 +98,15 @@ def serve(cfg: dict, mock: bool, host: str, port: int) -> None:
 
     from bellu.ui.server import create_app
 
-    session = build_chat(cfg, mock=mock)
+    runtime = build_runtime(cfg, mock=mock, for_ui=True)
     app = create_app(
-        session,
+        runtime,
         mode="mock" if mock else "live",
         model_id=cfg.get("llm", {}).get("model_id"),
     )
-    print(f"Chat UI: http://127.0.0.1:{port}")
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    print(f"Duplex UI: http://127.0.0.1:{port}")
+    print("Open the page, click Connect, then talk continuously (Moshi-style).")
+    uvicorn.run(app, host=host, port=port, log_level="info", ws="websockets")
 
 
 def main() -> None:
@@ -130,7 +130,7 @@ def main() -> None:
             port=args.port or int(ui.get("port") or 8998),
         )
         return
-    runtime = build_runtime(cfg, mock=args.command == "mock")
+    runtime = build_runtime(cfg, mock=args.command == "mock", for_ui=False)
     print("Listening. Ctrl+C to stop.")
     runtime.start()
     runtime.join()

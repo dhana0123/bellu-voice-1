@@ -57,9 +57,10 @@ python -m bellu.cli setup-sta
 ```bash
 python -m bellu.cli serve --mock          # http://127.0.0.1:8998
 python -m bellu.cli serve                 # live OpenHathi-7B + Indic ASR
+pip install 'uvicorn[standard]' websockets
 ```
 
-Type in the box, or hold **mic** to talk. Replies come from the backend model.
+Open the page → **Connect** → keep talking. Mic audio streams continuously over WebSocket (`/api/chat`), like Moshi. Replies stream back as text (+ TTS audio when ParlerTTS is available).
 
 Architecture dry-run (no large weights):
 

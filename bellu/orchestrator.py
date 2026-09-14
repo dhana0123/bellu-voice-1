@@ -41,6 +41,7 @@ class DuplexRuntime:
         self.last_llm = 0.0
         self.last_command: SpeechCommand | None = None
         self.last_trigger = ""
+        self.last_handled_transcript = ""
         self.ui_log: deque[dict[str, Any]] = deque(maxlen=80)
         self._mic = None
         self._loop_thread: Thread | None = None
@@ -133,8 +134,15 @@ class DuplexRuntime:
             gating = {**self.cfg.get("gating", {}), "min_decision_interval_ms": self.cfg["llm"].get("min_decision_interval_ms", 320)}
             decision = needs_llm(self.state, gating, self.last_llm)
             if decision.needed:
+                transcript = (self.state.asr.text or "").strip()
+                if decision.reason in {"turn_complete", "asr_final", "backchannel_opportunity"}:
+                    if transcript and transcript == self.last_handled_transcript:
+                        sleep(tick)
+                        continue
                 self.last_llm = now
                 self.last_trigger = decision.reason
+                if transcript and decision.reason in {"turn_complete", "asr_final", "typed_turn"}:
+                    self.last_handled_transcript = transcript
                 command = self.brain.decide(self.state, self.memory.prompt_block(self.state.snapshot()), decision.reason)
                 self._apply(command)
             sleep(tick)
@@ -183,4 +191,5 @@ class DuplexRuntime:
         )
         self.last_trigger = "typed_turn"
         self.last_llm = now
+        self.last_handled_transcript = text
         self._apply(command)
