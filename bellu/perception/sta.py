@@ -26,6 +26,17 @@ DEFAULT_PROMPT = (
 )
 
 
+def _patch_torch_whisper_compat() -> None:
+    """openai-whisper / Wenet import Union from torch.nn.modules.conv; new torch dropped it."""
+
+    import torch.nn.modules.conv as conv
+
+    if not hasattr(conv, "Union"):
+        from typing import Union
+
+        conv.Union = Union  # type: ignore[attr-defined]
+
+
 def log_mel_spectrogram(wav: np.ndarray, sample_rate: int = 16000) -> torch.Tensor:
     """Match Easy-Turn / Wenet whisper log-mel (80 bins, hop 160, n_fft 400)."""
 
@@ -54,6 +65,7 @@ class EasyTurnSTA:
         self.model = None
 
     def load(self) -> None:
+        _patch_torch_whisper_compat()
         root = Path(self.cfg["easy_turn_root"]).resolve()
         if not root.exists():
             raise FileNotFoundError(
@@ -80,8 +92,17 @@ class EasyTurnSTA:
             model = model[0]
         self.model = model.to(self.device)
         self.model.eval()
+        # Wenet generate() imports openai-whisper at inference time, not load time.
+        try:
+            import whisper  # noqa: F401
+        except ImportError as exc:
+            raise ImportError(
+                "Easy-Turn needs the openai-whisper package (import name 'whisper'). "
+                "Install: pip install openai-whisper"
+            ) from exc
 
     def infer(self, audio: np.ndarray, sample_rate: int, timestamp: float, assistant_speaking: bool) -> STAState:
+        _patch_torch_whisper_compat()
         feats = log_mel_spectrogram(audio, sample_rate).unsqueeze(0).to(self.device)
         lengths = torch.tensor([feats.size(1)], device=self.device)
         if self.model is None:

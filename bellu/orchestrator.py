@@ -49,6 +49,7 @@ class DuplexRuntime:
         self.last_trigger = "in"
         self._last_asr_log = ""
         self._last_sta_log = ""
+        self._sta_fail_log = ""
         self._asr_busy = Event()
         self._sta_busy = Event()
         self._llm_busy = Event()
@@ -221,7 +222,26 @@ class DuplexRuntime:
                 assistant_speaking=self._assistant_live(),
             )
         except Exception as exc:
-            clog("in", f"sta FAIL {type(exc).__name__}: {exc}")
+            if self._sta_fail_log != str(exc):
+                self._sta_fail_log = str(exc)
+                clog("in", f"sta FAIL {type(exc).__name__}: {exc}")
+                clog("boot", "STA falling back to MockSTA")
+            from bellu.perception.mock_sta import MockSTA
+
+            self.sta = MockSTA()
+            try:
+                sta_state = self.sta.infer(
+                    audio,
+                    self.cfg["sample_rate"],
+                    now,
+                    assistant_speaking=self._assistant_live(),
+                )
+            except Exception:
+                self._sta_busy.clear()
+                return
+            self.state.sta = sta_state
+            sta_line = f"{sta_state.event.value} {sta_state.turn_state.value} complete={sta_state.turn_completion:.2f}"
+            clog("in", f"sta {sta_line}")
             self._sta_busy.clear()
             return
         if not sta_state.pause_ms:
