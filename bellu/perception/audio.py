@@ -16,6 +16,7 @@ class AudioRing:
         self._lock = Lock()
         self.last_voice_s = 0.0
         self.speaking = False
+        self.rms = 0.0
 
     def push(self, chunk: np.ndarray) -> None:
         chunk = np.asarray(chunk, dtype=np.float32).reshape(-1)
@@ -26,6 +27,7 @@ class AudioRing:
                 dropped = self._buf.popleft()
                 self._n -= len(dropped)
         rms = float(np.sqrt(np.mean(np.square(chunk))) + 1e-9)
+        self.rms = rms
         self.speaking = rms > 0.015
         if self.speaking:
             self.last_voice_s = time()

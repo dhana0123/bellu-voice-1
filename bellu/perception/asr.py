@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-import soundfile as sf
 
 from bellu.perception.audio import resample_mono
 from bellu.types import ASRState
@@ -52,6 +51,8 @@ class IndicTranscribeASR(ASREngine):
     def transcribe(self, audio: np.ndarray, sample_rate: int, timestamp: float) -> ASRState:
         if self._model is None:
             self.load()
+        import soundfile as sf
+
         wav = resample_mono(audio, sample_rate, 16000)
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             path = tmp.name
@@ -71,11 +72,3 @@ class IndicTranscribeASR(ASREngine):
         is_final = bool(text) and text == self._last_text
         self._last_text = text
         return ASRState(text=text, is_final=is_final, language=lang, timestamp=timestamp)
-
-
-class MockASR(ASREngine):
-    def transcribe(self, audio: np.ndarray, sample_rate: int, timestamp: float) -> ASRState:
-        energy = float(np.sqrt(np.mean(np.square(audio))) + 1e-9)
-        if energy < 0.02:
-            return ASRState(text="", is_final=False, timestamp=timestamp)
-        return ASRState(text="(mock transcript)", is_final=False, language="en", timestamp=timestamp)

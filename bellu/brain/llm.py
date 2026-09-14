@@ -70,30 +70,40 @@ class SarvamBrain:
         text = self.tokenizer.decode(out[0][inputs["input_ids"].shape[-1] :], skip_special_tokens=True)
         return SpeechCommand.from_llm_text(text)
 
-
-class MockBrain:
-    def decide(self, state: GlobalState, memory_block: str, trigger: str) -> SpeechCommand:
-        if trigger == "backchannel_opportunity":
-            return SpeechCommand.from_dict(
-                {"action": "BACKCHANNEL", "nonverbal": "MM_HMM", "style": {"intensity": 0.3}, "reason": trigger}
+    def chat(self, user_text: str, history: list[dict] | None = None) -> str:
+        if self.model is None:
+            self.load()
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are Bellu, a natural conversational assistant for India. "
+                    "Reply in the user's language. Be concise and spoken-friendly."
+                ),
+            }
+        ]
+        for turn in (history or [])[-16:]:
+            messages.append(turn)
+        messages.append({"role": "user", "content": user_text})
+        prompt = self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+        inputs = self.tokenizer(prompt, return_tensors="pt")
+        device = next(self.model.parameters()).device
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        gen = GenerationConfig(
+            max_new_tokens=int(self.cfg.get("max_new_tokens", 256)),
+            temperature=float(self.cfg.get("temperature", 0.6)),
+            top_p=0.9,
+            do_sample=True,
+        )
+        with torch.no_grad():
+            out = self.model.generate(
+                input_ids=inputs["input_ids"],
+                attention_mask=inputs.get("attention_mask"),
+                generation_config=gen,
             )
-        if trigger == "user_interrupt":
-            return SpeechCommand.from_dict(
-                {
-                    "action": "INTERRUPT",
-                    "text": "Sorry — go ahead.",
-                    "style": {"emotion": "acknowledging", "intensity": 0.5},
-                    "reason": trigger,
-                }
-            )
-        if trigger in {"turn_complete", "asr_final"} and state.asr.text:
-            return SpeechCommand.from_dict(
-                {
-                    "action": "SAY",
-                    "text": "I hear you. Tell me a bit more.",
-                    "style": {"emotion": "empathetic", "intensity": 0.6, "pace": 0.95},
-                    "timing": {"pause_before_ms": 80},
-                    "reason": trigger,
-                }
-            )
-        return SpeechCommand.wait(trigger)
+        return self.tokenizer.decode(out[0][inputs["input_ids"].shape[-1] :], skip_special_tokens=True).strip()

@@ -3,10 +3,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from huggingface_hub import snapshot_download
-
+from bellu.chat import ChatSession
 from bellu.config import load_config
-from bellu.io.devices import Microphone, Speaker
 from bellu.orchestrator import DuplexRuntime
 
 
@@ -17,6 +15,7 @@ def setup_sta(cfg: dict) -> None:
     import subprocess
 
     import yaml
+    from huggingface_hub import snapshot_download
 
     root = Path("third_party/Easy-Turn")
     if not root.exists():
@@ -46,7 +45,7 @@ def setup_sta(cfg: dict) -> None:
 
 def build_runtime(cfg: dict, mock: bool) -> DuplexRuntime:
     if mock:
-        from bellu.brain.llm import MockBrain
+        from bellu.brain.mock import MockBrain
         from bellu.expression.tts import MockTTS
         from bellu.perception.asr import MockASR
         from bellu.perception.sta import MockSTA
@@ -71,18 +70,61 @@ def build_runtime(cfg: dict, mock: bool) -> DuplexRuntime:
         print("Loading TTS (ParlerTTS)...")
         tts.load()
 
+    from bellu.io.devices import Microphone, Speaker
+
     speaker = Speaker(cfg["playback"]["output_sample_rate"])
     return DuplexRuntime(cfg, asr, sta, brain, tts, speaker, Microphone)
 
 
+def build_chat(cfg: dict, mock: bool) -> ChatSession:
+    if mock:
+        from bellu.brain.mock import MockBrain
+        from bellu.perception.mock_asr import MockASR
+
+        return ChatSession(brain=MockBrain(), asr=MockASR())
+    from bellu.brain.llm import SarvamBrain
+    from bellu.perception.asr import IndicTranscribeASR
+
+    brain = SarvamBrain(cfg["llm"])
+    asr = IndicTranscribeASR(cfg["asr"]["model_id"], cfg["asr"].get("language"), cfg["asr"].get("device", "cuda"))
+    print("Loading LLM (Sarvam-30B)...")
+    brain.load()
+    print("Loading ASR (Indic-Transcribe-core)...")
+    asr.load()
+    return ChatSession(brain=brain, asr=asr)
+
+
+def serve(cfg: dict, mock: bool, host: str, port: int) -> None:
+    import uvicorn
+
+    from bellu.ui.server import create_app
+
+    session = build_chat(cfg, mock=mock)
+    app = create_app(session, mode="mock" if mock else "live")
+    print(f"Chat UI: http://127.0.0.1:{port}")
+    uvicorn.run(app, host=host, port=port, log_level="info")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Bellu full-duplex voice runtime")
-    parser.add_argument("command", choices=["run", "setup-sta", "mock"])
+    parser.add_argument("command", choices=["run", "setup-sta", "mock", "serve"])
     parser.add_argument("--config", default=None)
+    parser.add_argument("--mock", action="store_true", help="use mock models with serve")
+    parser.add_argument("--host", default=None)
+    parser.add_argument("--port", type=int, default=None)
     args = parser.parse_args()
     cfg = load_config(args.config)
     if args.command == "setup-sta":
         setup_sta(cfg)
+        return
+    if args.command == "serve":
+        ui = cfg.get("ui") or {}
+        serve(
+            cfg,
+            mock=args.mock,
+            host=args.host or ui.get("host") or "0.0.0.0",
+            port=args.port or int(ui.get("port") or 8998),
+        )
         return
     runtime = build_runtime(cfg, mock=args.command == "mock")
     print("Listening. Ctrl+C to stop.")

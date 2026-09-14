@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bellu</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <main class="shell">
+    <header class="top">
+      <div>
+        <p class="mark">Bellu</p>
+        <p class="sub">Talk to the model</p>
+      </div>
+      <p id="status" class="status">connecting</p>
+    </header>
+    <section id="log" class="log" aria-live="polite"></section>
+    <form id="composer" class="composer">
+      <button type="button" id="mic" class="mic" aria-label="Hold to talk">mic</button>
+      <input id="input" type="text" autocomplete="off" placeholder="Type a message…" />
+      <button type="submit" class="send">Send</button>
+    </form>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

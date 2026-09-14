@@ -12,7 +12,18 @@ class Speaker:
 
     def play(self, audio: np.ndarray, src_sr: int) -> None:
         wav = resample_mono(audio, src_sr, self.sample_rate)
-        sd.play(wav, self.sample_rate, blocking=False)
+        try:
+            sd.play(wav, self.sample_rate, blocking=False)
+        except Exception:
+            pass
+
+
+class NullSpeaker:
+    def __init__(self, sample_rate: int = 16000) -> None:
+        self.sample_rate = sample_rate
+
+    def play(self, audio: np.ndarray, src_sr: int) -> None:
+        return
 
 
 class Microphone:

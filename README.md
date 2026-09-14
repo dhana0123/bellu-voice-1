@@ -32,9 +32,17 @@ Python 3.10+, CUDA GPU strongly recommended. Sarvam-30B + Easy-Turn + ASR + TTS 
 cd Bellu-Voice-1
 python -m venv .venv
 .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -e ".[dev,train,tts]"
 huggingface-cli login
 ```
+
+Extras:
+
+- `pip install -e .` — runtime (ASR / STA / Sarvam / protocol)
+- `pip install -e ".[dev]"` — pytest, ruff
+- `pip install -e ".[train]"` — Easy-Turn / dataset / tensorboard / wandb
+- `pip install -e ".[tts]"` — ParlerTTS
+- `pip install -e ".[dev,train,tts]"` — everything
 
 Indic-Transcribe-core is gated: accept the terms on the model card, then log in.
 
@@ -44,7 +52,14 @@ Prepare Easy-Turn (clones the [official repo](https://github.com/ASLP-lab/Easy-T
 python -m bellu.cli setup-sta
 ```
 
-## Run
+## Chat UI
+
+```bash
+python -m bellu.cli serve --mock          # http://127.0.0.1:8998
+python -m bellu.cli serve                 # live Sarvam-30B + Indic ASR
+```
+
+Type in the box, or hold **mic** to talk. Replies come from the backend model.
 
 Architecture dry-run (no large weights):
 

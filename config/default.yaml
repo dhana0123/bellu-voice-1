@@ -41,6 +41,10 @@ tts:
 playback:
   output_sample_rate: 16000
 
+ui:
+  host: 0.0.0.0
+  port: 8998
+
 gating:
   backchannel_threshold: 0.75
   interruption_threshold: 0.55
