@@ -18,6 +18,31 @@ class ASREngine(ABC):
         raise NotImplementedError
 
 
+class _DynamicCacheLayers:
+    """Bridge Indic-Canary (`.layers[i].keys`) and both transformers cache layouts.
+
+    Newer transformers assign `self.layers` in Cache.__init__. Older ones only
+    store `key_cache` / `value_cache`. A getter-only property breaks the new API.
+    """
+
+    def __get__(self, obj, owner=None):
+        if obj is None:
+            return self
+        stored = obj.__dict__.get("layers")
+        if stored is not None:
+            return stored
+        key_cache = obj.__dict__.get("key_cache")
+        value_cache = obj.__dict__.get("value_cache")
+        if key_cache is None or value_cache is None:
+            raise AttributeError("DynamicCache has no layers or key_cache")
+        from types import SimpleNamespace
+
+        return [SimpleNamespace(keys=k, values=v) for k, v in zip(key_cache, value_cache)]
+
+    def __set__(self, obj, value):
+        obj.__dict__["layers"] = value
+
+
 def _patch_dynamic_cache_layers() -> None:
     """Indic-Canary reads cross_cache.layers[i].keys; older transformers only expose key_cache."""
 
@@ -26,20 +51,15 @@ def _patch_dynamic_cache_layers() -> None:
     except ImportError:
         return
 
-    if getattr(DynamicCache, "_bellu_layers_patched", False):
+    existing = getattr(DynamicCache, "layers", None)
+    already = getattr(DynamicCache, "_bellu_layers_patched", False)
+    if already and isinstance(existing, _DynamicCacheLayers):
+        return
+    # Getter-only property from the previous shim has no setter and must be replaced.
+    if already and isinstance(existing, property) and existing.fset is not None:
         return
 
-    from types import SimpleNamespace
-
-    @property
-    def layers(self):
-        key_cache = getattr(self, "key_cache", None)
-        value_cache = getattr(self, "value_cache", None)
-        if key_cache is None or value_cache is None:
-            raise AttributeError(f"{type(self).__name__} has no key_cache/value_cache")
-        return [SimpleNamespace(keys=k, values=v) for k, v in zip(key_cache, value_cache)]
-
-    DynamicCache.layers = layers  # type: ignore[attr-defined]
+    DynamicCache.layers = _DynamicCacheLayers()  # type: ignore[method-assign]
     DynamicCache._bellu_layers_patched = True
 
 
