@@ -35,8 +35,10 @@ def setup_sta(cfg: dict) -> None:
     with dest.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(train, handle)
     ckpt = Path(ckpt_dir) / "checkpoint.pt"
-    if ckpt.exists() and Path(cfg["sta"]["checkpoint"]) != ckpt:
-        shutil.copy2(ckpt, cfg["sta"]["checkpoint"])
+    dest_ckpt = Path(cfg["sta"]["checkpoint"])
+    if ckpt.exists() and dest_ckpt.resolve() != ckpt.resolve():
+        dest_ckpt.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ckpt, dest_ckpt)
     print("Easy-Turn ready.")
     print(f"  repo: {root}")
     print(f"  checkpoint: {cfg['sta']['checkpoint']}")
