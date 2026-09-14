@@ -197,7 +197,7 @@ async function connect() {
         const shown = displayable(data.last_text);
         if (shown) addBubble("bot", shown);
       }
-      turnEl.textContent = `turn · ${data.turn || "—"} · ${data.assistant || "waiting"}`;
+      turnEl.textContent = `user · ${data.turn || "—"} · sys · ${data.system || "idle"} · ${data.assistant || "waiting"}`;
       if (typeof data.rms === "number") meterEl.textContent = `mic · ${(data.rms * 100).toFixed(1)}`;
     } else if (data.type === "reply" && data.text) {
       addBubble("bot", data.text);

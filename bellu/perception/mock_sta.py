@@ -40,7 +40,16 @@ class MockSTA:
     EOT_SILENCE_MS = 550
 
     def infer(self, audio: np.ndarray, sample_rate: int, timestamp: float, assistant_speaking: bool) -> STAState:
-        tail = _tail_rms(audio, sample_rate)
+        wav = np.asarray(audio, dtype=np.float32).reshape(-1)
+        if wav.size < int(sample_rate * 0.08):
+            return STAState(
+                user_speaking=False,
+                turn_completion=0.10,
+                timestamp=timestamp,
+                turn_state=TurnState.WAIT,
+                event=STAEvent.HOLD,
+            )
+        tail = _tail_rms(wav, sample_rate)
         speaking_now = tail > 0.015
         silence_ms, had_speech = _trailing_silence_ms(audio, sample_rate)
         overlap = bool(assistant_speaking and speaking_now)

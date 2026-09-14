@@ -29,7 +29,6 @@ def merge_partial(prev: str, incoming: str) -> str:
     for k in range(max_k, 0, -1):
         if prev_w[-k:] == new_w[:k]:
             return " ".join(prev_w + new_w[k:])
-    # Distinct decode of the same clip: keep the longer recent hypothesis.
     if abs(len(incoming) - len(prev)) <= 8 or len(incoming) >= len(prev):
         return incoming
     return prev
@@ -41,28 +40,47 @@ class Utterance:
     text: str = ""
     frozen: bool = False
     final_transcript: str = ""
+    audio_start: int = 0
+    audio_end: int | None = None
+    last_asr_text: str = ""
+    last_asr_cursor: int = -1
     started_s: float = field(default_factory=time)
 
 
 class UtteranceTracker:
     def __init__(self) -> None:
-        self.current = Utterance(utterance_id=next(_IDS))
-        self.handled_utterance_id: int | None = None
+        self.current = Utterance(utterance_id=next(_IDS), frozen=True, audio_end=0)
+        self.handled_utterance_id = self.current.utterance_id
 
-    def ingest_asr(self, text: str) -> None:
+    def open(self) -> bool:
+        return not self.current.frozen
+
+    def ingest_asr(self, text: str, cursor: int) -> bool:
+        """Return True if the hypothesis is new for this utterance+cursor."""
+
         text = (text or "").strip()
         if not text or self.current.frozen:
-            return
-        merged = merge_partial(self.current.text, text)
-        self.current.text = merged
+            return False
+        if text == self.current.last_asr_text:
+            return False
+        self.current.last_asr_text = text
+        self.current.last_asr_cursor = cursor
+        self.current.text = merge_partial(self.current.text, text)
+        return True
 
-    def begin_speech(self) -> None:
-        if self.current.frozen or (
-            self.handled_utterance_id == self.current.utterance_id and self.current.text
-        ):
-            self.current = Utterance(utterance_id=next(_IDS))
+    def begin_speech(self, cursor: int, preroll: int = 0) -> bool:
+        """Start a new utterance after freeze/handle. Returns True if id changed."""
 
-    def freeze(self) -> bool:
+        u = self.current
+        if u.frozen or self.handled_utterance_id == u.utterance_id:
+            start = u.audio_end if u.audio_end is not None else max(0, cursor - preroll)
+            self.current = Utterance(utterance_id=next(_IDS), audio_start=start)
+            return True
+        if not u.text and u.audio_start == 0:
+            u.audio_start = max(0, cursor - preroll)
+        return False
+
+    def freeze(self, cursor: int) -> bool:
         if self.current.frozen:
             return False
         text = (self.current.text or "").strip()
@@ -70,6 +88,7 @@ class UtteranceTracker:
             return False
         self.current.frozen = True
         self.current.final_transcript = text
+        self.current.audio_end = cursor
         return True
 
     def mark_handled(self) -> None:

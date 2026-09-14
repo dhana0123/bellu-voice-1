@@ -30,6 +30,19 @@ class STAEvent(str, Enum):
     BACKCHANNEL_OPPORTUNITY = "BACKCHANNEL_OPPORTUNITY"
 
 
+class UserState(str, Enum):
+    SILENT = "SILENT"
+    SPEAKING = "SPEAKING"
+    HOLD = "HOLD"
+    END_OF_TURN = "END_OF_TURN"
+
+
+class SystemState(str, Enum):
+    IDLE = "IDLE"
+    SPEAKING = "SPEAKING"
+    STOPPING = "STOPPING"
+
+
 @dataclass
 class ASRState:
     text: str = ""
@@ -67,6 +80,7 @@ class AssistantRuntime:
     speaking: bool = False
     current_action: str = "waiting"
     last_text: str = ""
+    system_state: SystemState = SystemState.IDLE
 
 
 @dataclass
@@ -84,6 +98,7 @@ class GlobalState:
     sta: STAState = field(default_factory=STAState)
     assistant: AssistantRuntime = field(default_factory=AssistantRuntime)
     conversation: ConversationFacts = field(default_factory=ConversationFacts)
+    user_state: UserState = UserState.SILENT
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -95,6 +110,7 @@ class GlobalState:
             },
             "user": {
                 "speaking": self.sta.user_speaking,
+                "user_state": self.user_state.value,
                 "transcript": self.asr.text,
                 "is_final": self.asr.is_final,
                 "language": self.asr.language,
@@ -111,6 +127,7 @@ class GlobalState:
             },
             "assistant": {
                 "speaking": self.assistant.speaking,
+                "system_state": self.assistant.system_state.value,
                 "current_action": self.assistant.current_action,
             },
             "conversation": {

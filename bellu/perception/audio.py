@@ -13,6 +13,7 @@ class AudioRing:
         self.max_samples = int(sample_rate * seconds)
         self._buf: deque[np.ndarray] = deque()
         self._n = 0
+        self._written = 0
         self._lock = Lock()
         self.last_voice_s = 0.0
         self.speaking = False
@@ -20,17 +21,18 @@ class AudioRing:
 
     def push(self, chunk: np.ndarray) -> None:
         chunk = np.asarray(chunk, dtype=np.float32).reshape(-1)
-        with self._lock:
-            self._buf.append(chunk)
-            self._n += len(chunk)
-            while self._n > self.max_samples and self._buf:
-                dropped = self._buf.popleft()
-                self._n -= len(dropped)
         rms = float(np.sqrt(np.mean(np.square(chunk))) + 1e-9)
         self.rms = rms
         self.speaking = rms > 0.015
         if self.speaking:
             self.last_voice_s = time()
+        with self._lock:
+            self._buf.append(chunk)
+            self._n += len(chunk)
+            self._written += len(chunk)
+            while self._n > self.max_samples and self._buf:
+                dropped = self._buf.popleft()
+                self._n -= len(dropped)
 
     def window(self, seconds: float) -> np.ndarray:
         n = int(self.sample_rate * seconds)
@@ -47,6 +49,26 @@ class AudioRing:
         if self.speaking:
             return 0
         return int(max(0.0, time() - self.last_voice_s) * 1000)
+
+    @property
+    def written(self) -> int:
+        with self._lock:
+            return self._written
+
+    def slice_from(self, start: int, end: int | None = None) -> np.ndarray:
+        """Samples in [start, end) of the monotonic write cursor (clipped to the ring)."""
+
+        with self._lock:
+            written = self._written
+            if not self._buf:
+                return np.zeros(0, dtype=np.float32)
+            audio = np.concatenate(list(self._buf))
+        ring_start = written - len(audio)
+        stop = written if end is None else min(int(end), written)
+        begin = max(int(start), ring_start)
+        if stop <= begin:
+            return np.zeros(0, dtype=np.float32)
+        return audio[begin - ring_start : stop - ring_start].copy()
 
 
 def resample_mono(audio: np.ndarray, src_sr: int, dst_sr: int) -> np.ndarray:
