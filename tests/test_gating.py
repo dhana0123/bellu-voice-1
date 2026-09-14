@@ -4,6 +4,16 @@ from bellu.protocol import SpeechCommand
 from bellu.types import ASRState, GlobalState, STAState, TurnState
 
 
+def test_protocol_invalid_json_does_not_raise():
+    cmd = SpeechCommand.from_llm_text("{action: SAY, text: hello}")
+    assert cmd.action.value in {"SAY", "WAIT"}
+    cmd = SpeechCommand.from_llm_text("{")
+    assert cmd.action.value == "WAIT"
+    cmd = SpeechCommand.from_llm_text("{'action': 'SAY', 'text': 'Namaste'}")
+    assert cmd.action.value == "SAY"
+    assert "Namaste" in cmd.text
+
+
 def test_protocol_json_roundtrip():
     raw = """
     here is the command

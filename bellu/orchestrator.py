@@ -143,7 +143,15 @@ class DuplexRuntime:
                 self.last_trigger = decision.reason
                 if transcript and decision.reason in {"turn_complete", "asr_final", "typed_turn"}:
                     self.last_handled_transcript = transcript
-                command = self.brain.decide(self.state, self.memory.prompt_block(self.state.snapshot()), decision.reason)
+                try:
+                    command = self.brain.decide(
+                        self.state,
+                        self.memory.prompt_block(self.state.snapshot()),
+                        decision.reason,
+                    )
+                except Exception as exc:
+                    self._note("error", f"llm: {exc}")
+                    command = SpeechCommand.wait(reason=f"llm_error:{type(exc).__name__}")
                 self._apply(command)
             sleep(tick)
 

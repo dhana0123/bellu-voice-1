@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import re
 from dataclasses import asdict, dataclass, field
@@ -7,7 +8,9 @@ from typing import Any, Optional
 
 from bellu.types import Action
 
-_JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
+_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
+_ACTION_RE = re.compile(r"""['"]?action['"]?\s*[:=]\s*['"]?([A-Za-z_]+)""", re.IGNORECASE)
+_TEXT_RE = re.compile(r"""['"]text['"]\s*[:=]\s*['"]([^'"]*)['"]""", re.IGNORECASE)
 
 
 @dataclass
@@ -51,18 +54,45 @@ class SpeechCommand:
 
     @classmethod
     def from_llm_text(cls, raw: str) -> "SpeechCommand":
-        text = raw.strip()
-        match = _JSON_RE.search(text)
-        if not match:
-            if not text:
-                return cls.wait("empty llm output")
-            return cls(action=Action.SAY, text=text, reason="unstructured llm text")
-        data = json.loads(match.group(0))
-        return cls.from_dict(data)
+        text = (raw or "").strip()
+        if not text:
+            return cls.wait("empty llm output")
+
+        fenced = _FENCE_RE.search(text)
+        if fenced:
+            text = fenced.group(1).strip()
+
+        for blob in _json_blobs(text):
+            data = _loads_object(blob)
+            if data is not None:
+                try:
+                    return cls.from_dict(data)
+                except Exception:
+                    continue
+
+        action_m = _ACTION_RE.search(text)
+        text_m = _TEXT_RE.search(text)
+        if action_m:
+            spoken = (text_m.group(1) if text_m else "").strip()
+            try:
+                action = Action(action_m.group(1).upper())
+            except ValueError:
+                action = Action.SAY if spoken else Action.WAIT
+            if action == Action.SAY and not spoken:
+                spoken = _plain_speech(text)
+            return cls(action=action, text=spoken, reason="partial llm protocol")
+
+        spoken = _plain_speech(text)
+        if not spoken:
+            return cls.wait("unparseable llm output")
+        return cls(action=Action.SAY, text=spoken, reason="unstructured llm text")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SpeechCommand":
-        action = Action(str(data.get("action", "WAIT")).upper())
+        try:
+            action = Action(str(data.get("action", "WAIT")).upper())
+        except ValueError:
+            action = Action.SAY if data.get("text") else Action.WAIT
         style_in = data.get("style") or {}
         timing_in = data.get("timing") or {}
         return cls(
@@ -96,6 +126,60 @@ BACKCHANNEL_PHRASES = {
     "HAAN": "haan",
     "ACHA": "acha",
 }
+
+
+def _json_blobs(text: str) -> list[str]:
+    blobs: list[str] = []
+    start = None
+    depth = 0
+    in_str = False
+    quote = ""
+    escape = False
+    for i, ch in enumerate(text):
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == quote:
+                in_str = False
+            continue
+        if ch in {'"', "'"}:
+            in_str = True
+            quote = ch
+            continue
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}" and depth:
+            depth -= 1
+            if depth == 0 and start is not None:
+                blobs.append(text[start : i + 1])
+                start = None
+    return blobs
+
+
+def _loads_object(blob: str) -> dict[str, Any] | None:
+    for candidate in (blob, blob.replace("'", '"')):
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict):
+            return data
+    try:
+        data = ast.literal_eval(blob)
+    except (SyntaxError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _plain_speech(text: str) -> str:
+    cleaned = text.strip()
+    if cleaned.startswith("{") or cleaned.startswith("["):
+        return ""
+    return cleaned.split("\n", 1)[0].strip()[:400]
 
 
 def spoken_text(command: SpeechCommand) -> str:
