@@ -8,8 +8,17 @@ from typing import Any, Callable
 from bellu.log import clip, clog
 from bellu.memory import TemporalMemory
 from bellu.perception.audio import AudioRing
-from bellu.protocol import SpeechCommand
+from bellu.language import clean_spoken
 from bellu.types import ASRState, Action, GlobalState, TurnState
+
+
+def _same_utterance(a: str, b: str) -> bool:
+    a, b = (a or "").strip(), (b or "").strip()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    return a in b or b in a
 
 
 class DuplexRuntime:
@@ -129,15 +138,23 @@ class DuplexRuntime:
             self.state.rms = self.ring.rms
             self.state.sta.user_speaking = self.ring.speaking
             self.state.sta.pause_ms = self.ring.pause_ms()
-            self.state.assistant.speaking = bool(getattr(self.tts, "busy", Event()).is_set())
-            if not self._asr_busy.is_set() and now - self.last_asr >= asr_every:
+            tts_busy = bool(getattr(self.tts, "busy", Event()).is_set())
+            self.state.assistant.speaking = tts_busy
+            if not tts_busy and not self._asr_busy.is_set() and now - self.last_asr >= asr_every:
                 self._asr_busy.set()
                 Thread(target=self._asr_once, daemon=True).start()
             if not self._sta_busy.is_set() and now - self.last_sta >= sta_every:
                 self._sta_busy.set()
                 Thread(target=self._sta_once, daemon=True).start()
             asr = (self.state.asr.text or "").strip()
-            if not self._llm_busy.is_set() and asr and asr != self.last_handled_transcript:
+            paused = self.ring.pause_ms() >= 450
+            if (
+                not self._llm_busy.is_set()
+                and not tts_busy
+                and paused
+                and asr
+                and not _same_utterance(asr, self.last_handled_transcript)
+            ):
                 self._llm_busy.set()
                 Thread(target=self._llm_once, daemon=True).start()
             sleep(tick)
@@ -193,8 +210,9 @@ class DuplexRuntime:
         self._sta_busy.clear()
 
     def _on_llm_tokens(self, piece: str) -> None:
-        piece = (piece or "").strip()
+        piece = clean_spoken(piece or "")
         if not piece or self.stop.is_set():
+            clog("out", "skip junk phrase")
             return
         cmd = SpeechCommand(action=Action.SAY, text=piece, reason="micro_turn")
         self.last_command = cmd
@@ -202,7 +220,7 @@ class DuplexRuntime:
         self.state.assistant.last_text = piece
         self.memory.add("assistant_say", piece)
         self._note("protocol", f"SAY {clip(piece)}")
-        clog("out", f"token→tts {clip(piece)}")
+        clog("out", f"phrase→tts {clip(piece)}")
         try:
             self.tts.speak_text(piece, self._audio_sink)
         except Exception as exc:

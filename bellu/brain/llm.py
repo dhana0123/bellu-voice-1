@@ -160,23 +160,20 @@ class SarvamBrain:
         thread = Thread(target=self.model.generate, kwargs=gen_kwargs, daemon=True)
         thread.start()
         buf = ""
-        ntok = 0
         for tok in streamer:
             if not tok:
                 continue
             buf += tok
-            ntok += 1
-            flush = ntok >= 8 or any(ch in tok for ch in "।.?!, \n")
-            if flush:
+            if any(ch in tok for ch in "।.?!\n") and len(clean_spoken(buf)) >= 4:
                 piece = clean_spoken(buf)
                 buf = ""
-                ntok = 0
                 if piece:
-                    clog("llm", f"token→tts {clip(piece)}")
+                    clog("llm", f"phrase→tts {clip(piece)}")
                     on_chunk(piece)
+                break
         piece = clean_spoken(buf)
-        if piece:
-            clog("llm", f"token→tts {clip(piece)}")
+        if piece and len(piece) >= 4:
+            clog("llm", f"phrase→tts {clip(piece)}")
             on_chunk(piece)
         thread.join(timeout=1.0)
 

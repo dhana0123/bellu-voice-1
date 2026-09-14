@@ -38,8 +38,8 @@ def create_app(runtime, mode: str, model_id: str | None = None) -> FastAPI:
         peak = float(np.max(np.abs(pcm))) if pcm.size else 0.0
         raw = (np.clip(pcm, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
         clog("tts", f"audio {len(raw)} bytes peak={peak:.3f} sr={sr}")
-        if pcm.size == 0 or peak < 1e-4:
-            clog("tts", "skip silent chunk")
+        if pcm.size == 0 or peak < 0.02:
+            clog("tts", f"skip quiet chunk peak={peak:.3f}")
             return
         with audio_lock:
             audio_out.append(raw)

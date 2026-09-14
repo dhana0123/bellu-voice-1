@@ -81,4 +81,7 @@ def clean_spoken(text: str) -> str:
         text = text.split("వినేవాడు", 1)[0].strip()
     if not looks_locked(text):
         return ""
+    te = len(_TE.findall(text))
+    if te < 4:
+        return ""
     return text[:80]
