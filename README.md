@@ -53,7 +53,9 @@ pip install -U "transformers>=4.57.0" accelerate
 python -c "from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS; import transformers; print(transformers.__version__)"
 ```
 
-If you skip the upgrade, the server falls back to `sarvamai/sarvam-m`. Pass `--strict-llm` to fail instead. If Parler breaks after the upgrade, use a second venv for TTS.
+If you skip the upgrade, the server falls back to `sarvamai/sarvam-m`. Pass `--strict-llm` to fail instead.
+
+Parler still imports `isin_mps_friendly`, which newer transformers removed. Bellu patches that on load so **one venv** can run Sarvam-30B and Indic Parler together.
 
 ## Stack
 

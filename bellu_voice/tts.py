@@ -25,6 +25,9 @@ class TtsEngine:
             self._load()
 
     def _load(self) -> None:
+        from .tf_compat import patch_transformers_for_parler
+
+        patch_transformers_for_parler()
         from parler_tts import ParlerTTSForConditionalGeneration
         from transformers import AutoTokenizer
 
