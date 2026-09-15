@@ -18,6 +18,21 @@ def patch_transformers_for_parler() -> None:
     _PATCHED = True
 
 
+def patch_parler_class(cls) -> None:
+    """Transformers 5 calls tie_weights(recompute_mapping=False); Parler does not accept that."""
+    orig = cls.tie_weights
+
+    def tie_weights(self, *args, **kwargs):
+        kwargs.pop("recompute_mapping", None)
+        try:
+            return orig(self, *args, **kwargs)
+        except TypeError:
+            return orig(self)
+
+    cls.tie_weights = tie_weights
+    logger.info("patched %s.tie_weights for transformers 5", cls.__name__)
+
+
 def _patch_isin_mps_friendly() -> None:
     import torch
     import transformers.pytorch_utils as pu

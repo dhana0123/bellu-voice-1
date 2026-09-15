@@ -25,7 +25,7 @@ class TtsEngine:
             self._load()
 
     def _load(self) -> None:
-        from .tf_compat import patch_transformers_for_parler
+        from .tf_compat import patch_parler_class, patch_transformers_for_parler
 
         patch_transformers_for_parler()
         from parler_tts.configuration_parler_tts import ParlerTTSConfig
@@ -35,6 +35,8 @@ class TtsEngine:
 
         from parler_tts import ParlerTTSForConditionalGeneration
         from transformers import AutoTokenizer
+
+        patch_parler_class(ParlerTTSForConditionalGeneration)
 
         logger.info("Loading TTS %s …", PARLER_REPO)
         self.model = ParlerTTSForConditionalGeneration.from_pretrained(PARLER_REPO).to(self.device)
