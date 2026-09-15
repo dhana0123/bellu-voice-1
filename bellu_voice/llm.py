@@ -1,4 +1,4 @@
-"""Sarvam chat LLM. Default: 30B GGUF Q4 (~20 GB) to fit typical disks."""
+"""Sarvam chat LLM. Default: transformers bf16 (sarvamai/sarvam-30b)."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def _has_all_attention_functions() -> bool:
         return False
 
 
-def resolve_llm_model(model_id: str, *, strict_llm: bool = False, weights: Weights = "gguf") -> str:
+def resolve_llm_model(model_id: str, *, strict_llm: bool = False, weights: Weights = "bf16") -> str:
     if weights == "gguf":
         return model_id
     if "sarvam-30b" not in model_id.lower() or model_id.endswith("-gguf"):
@@ -73,7 +73,7 @@ class LlmEngine:
         mock: bool = False,
         load_in_4bit: bool = False,
         strict_llm: bool = False,
-        weights: Weights = "gguf",
+        weights: Weights = "bf16",
         n_ctx: int = 4096,
         n_gpu_layers: int = -1,
     ):
@@ -123,15 +123,12 @@ class LlmEngine:
         import transformers
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
-        need = 160.0 if "sarvam-30b" in self.model_id.lower() else 50.0
-        require_free_gb(need)
         logger.info(
             "Loading LLM %s (transformers %s) …",
             self.model_id,
             getattr(transformers, "__version__", "?"),
         )
-        local = snapshot(self.model_id)
-        self.tok = AutoTokenizer.from_pretrained(local, trust_remote_code=True)
+        self.tok = AutoTokenizer.from_pretrained(self.model_id, trust_remote_code=True)
         kwargs: dict[str, Any] = {"trust_remote_code": True, "device_map": "auto"}
         if self.load_in_4bit:
             from transformers import BitsAndBytesConfig
@@ -140,14 +137,10 @@ class LlmEngine:
         else:
             kwargs["torch_dtype"] = torch.bfloat16 if torch.cuda.is_available() else torch.float32
         try:
-            self.model = AutoModelForCausalLM.from_pretrained(local, **kwargs)
+            self.model = AutoModelForCausalLM.from_pretrained(self.model_id, **kwargs)
         except ImportError as exc:
             if "ALL_ATTENTION_FUNCTIONS" in str(exc):
                 raise SystemExit(f"{TRANSFORMERS_MIN_HINT}\nUnderlying error: {exc}") from exc
-            raise
-        except OSError as exc:
-            if getattr(exc, "errno", None) == 28 or "No space left" in str(exc):
-                require_free_gb(need + 20)
             raise
         self.model.eval()
         logger.info("LLM ready (%s)", self.model_id)

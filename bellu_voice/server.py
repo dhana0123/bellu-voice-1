@@ -46,6 +46,7 @@ class ServerState:
             mock=mock,
             load_in_4bit=args.llm_load_in_4bit,
             strict_llm=args.strict_llm,
+            weights=args.llm_weights,
         )
         self.tts = TtsEngine(device=device, mock=mock)
         self.backchannels = Backchannels(self.tts, self.lang, mock=mock)
@@ -107,6 +108,12 @@ def main() -> None:
     p.add_argument("--lang", default="en", help="Default session language (en, te, hi, …)")
     p.add_argument("--asr", default="auto", choices=["auto", "whisper", "conformer"])
     p.add_argument("--llm", default=DEFAULT_MODEL)
+    p.add_argument(
+        "--llm-weights",
+        default="bf16",
+        choices=["bf16", "gguf"],
+        help="bf16 = transformers Sarvam-30B (already in your HF cache). gguf needs llama-cpp-python.",
+    )
     p.add_argument("--llm-load-in-4bit", action="store_true")
     p.add_argument(
         "--strict-llm",
