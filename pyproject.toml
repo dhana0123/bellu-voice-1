@@ -1,84 +1,38 @@
-[build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "bellu-voice"
 version = "0.1.0"
-description = "Continuous full-duplex spoken dialogue: ASR + Easy-Turn STA + Sarvam OpenHathi-7B + ParlerTTS"
-readme = "README.md"
+description = "Moshi-UI duplex voice agent: DualTurn + ASR + Sarvam-30B + Parler TTS"
 requires-python = ">=3.10"
-license = { text = "Apache-2.0" }
-authors = [{ name = "Bellu Voice" }]
-keywords = ["full-duplex", "speech", "asr", "tts", "turn-taking"]
-classifiers = [
-  "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.10",
-  "Programming Language :: Python :: 3.11",
-  "Programming Language :: Python :: 3.12",
-  "Topic :: Scientific/Engineering :: Artificial Intelligence",
-]
 dependencies = [
-  "numpy",
-  "pyyaml",
-  "pydantic>=2",
-  "soundfile",
-  "sounddevice",
-  "librosa",
-  "torch",
-  "torchaudio",
-  "transformers>=4.56.0,<5",
-  "accelerate",
-  "huggingface_hub",
-  "sentencepiece",
-  "peft",
-  "fastapi",
-  "uvicorn[standard]",
-  "websockets>=12",
+    "aiohttp>=3.9",
+    "numpy>=1.26",
+    "torch",
+    "torchaudio",
+    "transformers>=4.57.0",
+    "accelerate",
+    "huggingface-hub>=0.24",
+    "safetensors",
+    "sphn",
+    "soundfile",
+    "faster-whisper",
+    "sentencepiece",
 ]
 
 [project.optional-dependencies]
-dev = [
-  "pytest>=8",
-  "pytest-cov",
-  "ruff",
-]
-train = [
-  "gxl_ai_utils",
-  "tensorboardX",
-  "tensorboard",
-  "peft",
-  "datasets",
-  "evaluate",
-  "wandb",
-]
-tts = [
-  "parler-tts @ git+https://github.com/huggingface/parler-tts.git",
-]
-all = [
-  "bellu-voice[dev,train,tts]",
-]
+tts = ["parler-tts"]
+indic = ["nemo_toolkit[asr]"]
 
 [project.scripts]
-bellu = "bellu.cli:main"
+bellu-voice = "bellu_voice.server:main"
 
-[project.urls]
-Homepage = "https://huggingface.co/ASLP-lab/Easy-Turn"
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["bellu*"]
-
-[tool.setuptools.package-data]
-bellu = ["py.typed", "ui/static/*"]
+where = ["."]
+include = ["bellu_voice*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-q"
-
-[tool.ruff]
-line-length = 110
-target-version = "py310"
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "UP"]

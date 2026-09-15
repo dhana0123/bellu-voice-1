@@ -1,99 +1,59 @@
-# Bellu Voice
+# Bellu-Voice-1
 
-Continuous full-duplex spoken dialogue as specialized modules with stable interfaces.
+Modular duplex voice agent with a **Moshi web UI** on port **8998**.
 
-```text
-MIC → ASR (what) + STA (what is happening)
-        → Global state + temporal memory
-        → Event loop (~80 ms)
-        → LLM only on meaningful events (what should happen)
-        → Speech protocol
-        → Streaming TTS (how it sounds)
-```
+Turn-taking is [DualTurn](https://arxiv.org/abs/2603.08216) (`anyreach-ai/dualturn-qwen2.5-mimi-0.5B`). Speech content is ASR → **Sarvam-30B** → **Indic Parler TTS**. Default language is **English**; pass `--lang` or `?lang=` for others.
 
-## Models in v1
+## H200 + SSH
 
-| Job | Module | Model |
-| --- | --- | --- |
-| ASR | What did they say? | [Indic-Transcribe-core](https://huggingface.co/bodhan-ai/indic-transcribe-core) (25 Indian languages, gated HF repo) |
-| STA | Turn / overlap / backchannel | [Easy-Turn](https://huggingface.co/ASLP-lab/Easy-Turn) (`COMPLETE`, `INCOMPLETE`, `BACKCHANNEL`, `WAIT`) |
-| LLM | What should happen? | [OpenHathi-7B](https://huggingface.co/sarvamai/OpenHathi-7B-Hi-v0.1-Base) (Sarvam 7B) |
-| TTS | How should it sound? | [ParlerTTS Mini v1](https://huggingface.co/parler-tts/parler-tts-mini-v1) (streaming) |
-
-The LLM never sets F0, MFCCs, or spectral tilt. It emits a speech-protocol command. TTS turns that into acoustics.
-
-The 80 ms loop always refreshes state. Sarvam is **not** called every tick.
-
-## Setup
-
-Python 3.10+, CUDA GPU strongly recommended. Change `llm.model_id` in `config/default.yaml` if you want another Sarvam checkpoint.
+On the GPU box:
 
 ```bash
 cd Bellu-Voice-1
 python -m venv .venv
-.venv\Scripts\activate
-pip install -e ".[dev,train,tts]"
-huggingface-cli login
+source .venv/bin/activate
+pip install -U pip
+pip install -e .
+pip install "git+https://github.com/huggingface/parler-tts.git"
+# IndicConformer (optional, hi/te/ta/kn):
+# pip install "nemo_toolkit[asr]"
+
+python -m bellu_voice --host 127.0.0.1 --port 8998 --lang en --device cuda
 ```
 
-Extras:
-
-- `pip install -e .` — runtime (ASR / STA / Sarvam / protocol)
-- `pip install -e ".[dev]"` — pytest, ruff
-- `pip install -e ".[train]"` — Easy-Turn / dataset / tensorboard / wandb
-- `pip install -e ".[tts]"` — ParlerTTS
-- `pip install -e ".[dev,train,tts]"` — everything
-
-Indic-Transcribe-core is gated: accept the terms on the model card, then log in.
-
-Prepare Easy-Turn (clones the [official repo](https://github.com/ASLP-lab/Easy-Turn), downloads `checkpoint.pt` and `Qwen/Qwen2.5-0.5B-Instruct`):
+From your laptop (mic only works on localhost HTTP):
 
 ```bash
-python -m bellu.cli setup-sta
+ssh -L 8998:127.0.0.1:8998 user@h200-host
 ```
 
-## Chat UI
+Open [http://localhost:8998](http://localhost:8998).
+
+### Other languages
 
 ```bash
-python -m bellu.cli serve --mock          # http://127.0.0.1:8998
-python -m bellu.cli serve                 # live OpenHathi-7B + Indic ASR
-pip install 'uvicorn[standard]' websockets
+python -m bellu_voice --lang te          # Telugu (IndicConformer if NeMo is installed)
+python -m bellu_voice --lang hi
+# or keep English server default and override per session:
+# ws://host:8998/api/chat?lang=te
 ```
 
-Open the page → **Connect** → keep talking. Mic audio streams continuously over WebSocket (`/api/chat`), like Moshi. Replies stream back as text (+ TTS audio when ParlerTTS is available).
+`--asr auto` uses IndicConformer for `hi`/`te`/`ta`/`kn` and Whisper `large-v3` otherwise. Force Whisper with `--asr whisper`.
 
-Architecture dry-run (no large weights):
+If Sarvam-30B VRAM is tight: `--llm-load-in-4bit`.
 
-```bash
-python -m bellu.cli mock
-```
+`--mock` runs energy VAD + dummy ASR/LLM/TTS (no weight downloads).
 
-Live duplex:
+Sarvam-30B needs `transformers>=4.57`. If Parler fails after that upgrade, install TTS in a second process/venv (same conflict as the duplex data README).
 
-```bash
-python -m bellu.cli run
-```
+## Stack
 
-Speech-protocol experiment (does ParlerTTS follow emotion / pace / backchannel?):
+| Piece | Default |
+| --- | --- |
+| UI | Moshi static bundle (`kyutai/moshi-artifacts`), Opus WS `/api/chat` |
+| Turn-taking | DualTurn 0.5B, 240 ms hop, actions ST/CL/SL/CT/BC |
+| ASR | faster-whisper large-v3 (English + all Whisper langs) |
+| LLM | `sarvamai/sarvam-30b` |
+| TTS | `ai4bharat/indic-parler-tts` |
 
-```bash
-python scripts/test_speech_protocol.py --print-only
-python scripts/test_speech_protocol.py
-```
-
-## Layout
-
-```text
-bellu/
-  perception/   ASR + Easy-Turn STA + mic ring buffer
-  brain/        Sarvam controller → speech protocol JSON
-  expression/   ParlerTTS streaming + cancel
-  orchestrator  80 ms loop, gating, interruption
-  protocol.py   SAY / BACKCHANNEL / WAIT / STOP / INTERRUPT / CONTINUE
-```
-
-## Tests
-
-```bash
-python -m pytest tests -q
-```
+DualTurn was trained on English conversational audio. Other languages still use it as an acoustic policy.
