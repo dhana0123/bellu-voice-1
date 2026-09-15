@@ -28,6 +28,11 @@ class TtsEngine:
         from .tf_compat import patch_transformers_for_parler
 
         patch_transformers_for_parler()
+        from parler_tts.configuration_parler_tts import ParlerTTSConfig
+
+        # Transformers 5: to_diff_dict() does Config() with no encoder/decoder kwargs.
+        ParlerTTSConfig.has_no_defaults_at_init = True
+
         from parler_tts import ParlerTTSForConditionalGeneration
         from transformers import AutoTokenizer
 
