@@ -1,25 +1,28 @@
-"""Sarvam chat LLM (default: sarvam-30b)."""
+"""Sarvam chat LLM. Default: 30B GGUF Q4 (~20 GB) to fit typical disks."""
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
 
+from .hub import require_free_gb, snapshot
 from .lang import system_prompt
 
 logger = logging.getLogger("bellu_voice.llm")
 
 DEFAULT_MODEL = "sarvamai/sarvam-30b"
+GGUF_REPO = "sarvamai/sarvam-30b-gguf"
 FALLBACK_LLM = "sarvamai/sarvam-m"
+Weights = Literal["gguf", "bf16"]
 
 TRANSFORMERS_MIN_HINT = (
-    "sarvamai/sarvam-30b needs transformers>=4.57 "
+    "sarvamai/sarvam-30b (bf16) needs transformers>=4.57 "
     "(ALL_ATTENTION_FUNCTIONS is missing).\n\n"
     "Parler-TTS often downgrades transformers. In this venv run:\n"
     '  pip install -U "transformers>=4.57.0" accelerate\n'
-    "Then restart: python -m bellu_voice --host 127.0.0.1 --port 8998\n\n"
-    "If Parler breaks after the upgrade, either keep two venvs or pass:\n"
-    f"  --llm {FALLBACK_LLM}\n"
+    "Or skip bf16 and use the 20 GB GGUF build:\n"
+    "  python -m bellu_voice --llm-weights gguf\n"
 )
 
 
@@ -29,20 +32,13 @@ def _has_all_attention_functions() -> bool:
 
         return True
     except ImportError:
-        pass
-    try:
-        from transformers.modeling_flash_attention_utils import (  # noqa: F401
-            ALL_ATTENTION_FUNCTIONS,
-        )
-
-        return True
-    except ImportError:
         return False
 
 
-def resolve_llm_model(model_id: str, *, strict_llm: bool = False) -> str:
-    """Map sarvam-30b → sarvam-m when transformers is too old."""
-    if "sarvam-30b" not in model_id.lower():
+def resolve_llm_model(model_id: str, *, strict_llm: bool = False, weights: Weights = "gguf") -> str:
+    if weights == "gguf":
+        return model_id
+    if "sarvam-30b" not in model_id.lower() or model_id.endswith("-gguf"):
         return model_id
     import transformers
 
@@ -50,16 +46,23 @@ def resolve_llm_model(model_id: str, *, strict_llm: bool = False) -> str:
         return model_id
     ver = getattr(transformers, "__version__", "?")
     if strict_llm:
-        raise SystemExit(
-            f"{TRANSFORMERS_MIN_HINT}\nInstalled transformers=={ver}"
-        )
+        raise SystemExit(f"{TRANSFORMERS_MIN_HINT}\nInstalled transformers=={ver}")
     logger.warning(
-        "sarvam-30b needs transformers>=4.57 (have %s). Falling back to %s. "
-        "Fix: pip install -U \"transformers>=4.57.0\" accelerate",
+        "sarvam-30b bf16 needs transformers>=4.57 (have %s). Falling back to %s.",
         ver,
         FALLBACK_LLM,
     )
     return FALLBACK_LLM
+
+
+def _gguf_shard(local_dir: str) -> str:
+    root = Path(local_dir)
+    shards = sorted(root.glob("*.gguf-00001-of-*.gguf")) + sorted(root.glob("*00001-of-*.gguf"))
+    if not shards:
+        shards = sorted(root.glob("*.gguf"))
+    if not shards:
+        raise SystemExit(f"No GGUF files in {local_dir}")
+    return str(shards[0])
 
 
 class LlmEngine:
@@ -70,27 +73,65 @@ class LlmEngine:
         mock: bool = False,
         load_in_4bit: bool = False,
         strict_llm: bool = False,
+        weights: Weights = "gguf",
+        n_ctx: int = 4096,
+        n_gpu_layers: int = -1,
     ):
         self.device = device
-        self.model_id = resolve_llm_model(model_id, strict_llm=strict_llm)
+        self.weights = weights
+        self.n_ctx = n_ctx
+        self.n_gpu_layers = n_gpu_layers if device.startswith("cuda") else 0
+        self.model_id = resolve_llm_model(model_id, strict_llm=strict_llm, weights=weights)
         self.mock = mock
         self.load_in_4bit = load_in_4bit
         self.tok = None
         self.model = None
+        self._gguf = None
         if not mock:
-            self._load()
+            if weights == "gguf" or str(self.model_id).endswith("-gguf"):
+                self._load_gguf()
+            else:
+                self._load_transformers()
 
-    def _load(self) -> None:
+    def _load_gguf(self) -> None:
+        try:
+            from llama_cpp import Llama
+        except ImportError as exc:
+            raise SystemExit(
+                "Sarvam-30B GGUF needs llama-cpp-python (~20 GB download, not 129 GB).\n\n"
+                "CPU:\n  pip install llama-cpp-python\n"
+                "CUDA:\n  CMAKE_ARGS=\"-DGGML_CUDA=on\" pip install llama-cpp-python "
+                "--force-reinstall --no-cache-dir\n"
+            ) from exc
+
+        repo = GGUF_REPO if "sarvam-30b" in self.model_id.lower() else self.model_id
+        require_free_gb(25)
+        local = snapshot(repo, allow_patterns=["*.gguf", "*.md", "*.json"])
+        path = _gguf_shard(local)
+        logger.info("Loading GGUF %s (n_gpu_layers=%s) …", path, self.n_gpu_layers)
+        self._gguf = Llama(
+            model_path=path,
+            n_ctx=self.n_ctx,
+            n_gpu_layers=self.n_gpu_layers,
+            verbose=False,
+        )
+        self.model_id = repo
+        logger.info("LLM ready (GGUF %s)", repo)
+
+    def _load_transformers(self) -> None:
         import torch
         import transformers
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
+        need = 160.0 if "sarvam-30b" in self.model_id.lower() else 50.0
+        require_free_gb(need)
         logger.info(
             "Loading LLM %s (transformers %s) …",
             self.model_id,
             getattr(transformers, "__version__", "?"),
         )
-        self.tok = AutoTokenizer.from_pretrained(self.model_id, trust_remote_code=True)
+        local = snapshot(self.model_id)
+        self.tok = AutoTokenizer.from_pretrained(local, trust_remote_code=True)
         kwargs: dict[str, Any] = {"trust_remote_code": True, "device_map": "auto"}
         if self.load_in_4bit:
             from transformers import BitsAndBytesConfig
@@ -99,12 +140,14 @@ class LlmEngine:
         else:
             kwargs["torch_dtype"] = torch.bfloat16 if torch.cuda.is_available() else torch.float32
         try:
-            self.model = AutoModelForCausalLM.from_pretrained(self.model_id, **kwargs)
+            self.model = AutoModelForCausalLM.from_pretrained(local, **kwargs)
         except ImportError as exc:
-            if "ALL_ATTENTION_FUNCTIONS" in str(exc) and "sarvam-30b" in self.model_id.lower():
-                raise SystemExit(
-                    f"{TRANSFORMERS_MIN_HINT}\nUnderlying error: {exc}"
-                ) from exc
+            if "ALL_ATTENTION_FUNCTIONS" in str(exc):
+                raise SystemExit(f"{TRANSFORMERS_MIN_HINT}\nUnderlying error: {exc}") from exc
+            raise
+        except OSError as exc:
+            if getattr(exc, "errno", None) == 28 or "No space left" in str(exc):
+                require_free_gb(need + 20)
             raise
         self.model.eval()
         logger.info("LLM ready (%s)", self.model_id)
@@ -114,6 +157,14 @@ class LlmEngine:
             last = history[-1]["content"] if history else ""
             return f"You said: {last}" if last else "Hello, I am Bellu."
         messages = [{"role": "system", "content": system_prompt(lang)}] + history
+        if self._gguf is not None:
+            out = self._gguf.create_chat_completion(
+                messages=messages,
+                max_tokens=128,
+                temperature=0.4,
+                top_p=0.9,
+            )
+            return str(out["choices"][0]["message"]["content"]).strip()
         tok = self.tok
         kwargs = dict(tokenize=False, add_generation_prompt=True)
         try:
