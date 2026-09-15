@@ -3,6 +3,7 @@ import numpy as np
 from bellu_voice.audio import DUALTURN_HOP
 from bellu_voice.dualturn import DualTurnEngine, DualTurnSignals, heuristic
 from bellu_voice.lang import asr_backend_for, normalize_lang, system_prompt
+from bellu_voice.llm import FALLBACK_LLM, resolve_llm_model
 from bellu_voice.protocol import audio_msg, handshake, parse_kind, text_msg
 
 
@@ -43,6 +44,11 @@ def test_heuristic_st_and_sl():
         bc_agent=0.0,
     )
     assert heuristic(sl, speaking=True) == "SL"
+
+
+def test_resolve_llm_keeps_non_30b():
+    assert resolve_llm_model("sarvamai/sarvam-m") == "sarvamai/sarvam-m"
+    assert FALLBACK_LLM == "sarvamai/sarvam-m"
 
 
 def test_mock_engine_eot_start_talking():

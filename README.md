@@ -15,6 +15,8 @@ source .venv/bin/activate
 pip install -U pip
 pip install -e .
 pip install "git+https://github.com/huggingface/parler-tts.git"
+# Parler pins an old transformers; Sarvam-30B needs 4.57+:
+pip install -U "transformers>=4.57.0" accelerate
 # IndicConformer (optional, hi/te/ta/kn):
 # pip install "nemo_toolkit[asr]"
 
@@ -44,7 +46,14 @@ If Sarvam-30B VRAM is tight: `--llm-load-in-4bit`.
 
 `--mock` runs energy VAD + dummy ASR/LLM/TTS (no weight downloads).
 
-Sarvam-30B needs `transformers>=4.57`. If Parler fails after that upgrade, install TTS in a second process/venv (same conflict as the duplex data README).
+**Sarvam-30B / `ALL_ATTENTION_FUNCTIONS`:** `parler-tts` often leaves `transformers<4.57`. Always re-upgrade after installing Parler:
+
+```bash
+pip install -U "transformers>=4.57.0" accelerate
+python -c "from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS; import transformers; print(transformers.__version__)"
+```
+
+If you skip the upgrade, the server falls back to `sarvamai/sarvam-m`. Pass `--strict-llm` to fail instead. If Parler breaks after the upgrade, use a second venv for TTS.
 
 ## Stack
 

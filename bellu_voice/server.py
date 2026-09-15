@@ -45,6 +45,7 @@ class ServerState:
             model_id=args.llm,
             mock=mock,
             load_in_4bit=args.llm_load_in_4bit,
+            strict_llm=args.strict_llm,
         )
         self.tts = TtsEngine(device=device, mock=mock)
         self.backchannels = Backchannels(self.tts, self.lang, mock=mock)
@@ -107,6 +108,11 @@ def main() -> None:
     p.add_argument("--asr", default="auto", choices=["auto", "whisper", "conformer"])
     p.add_argument("--llm", default=DEFAULT_MODEL)
     p.add_argument("--llm-load-in-4bit", action="store_true")
+    p.add_argument(
+        "--strict-llm",
+        action="store_true",
+        help="Fail if sarvam-30b cannot load (do not fall back to sarvam-m).",
+    )
     p.add_argument("--static", default=None)
     p.add_argument("--mock", action="store_true", help="Energy VAD + dummy ASR/LLM/TTS (no GPU weights)")
     p.add_argument("--gradio-tunnel", action="store_true")
